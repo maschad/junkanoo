@@ -1,0 +1,19 @@
+[package]
+name = "dogon"
+version = "0.1.0"
+edition = "2021"
+description = "A peer-to-peer file transfer tool using libp2p"
+authors = ["Your Name <your.email@example.com>"]
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+libp2p = { version = "0.52", features = ["tcp", "noise", "yamux", "mplex", "identify", "ping", "tokio"] }
+clap = { version = "4", features = ["derive"] }
+log = "0.4"
+env_logger = "0.10"
+anyhow = "1.0"
+ratatui = "0.23"
+crossterm = "0.27"
+walkdir = "2.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
