@@ -1,4 +1,13 @@
+use std::io::Stdout;
+
+use app::App;
 use cli::commands::get_args;
+use crossterm::{
+    event::{DisableMouseCapture, EnableMouseCapture},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{prelude::CrosstermBackend, Terminal};
 
 mod app;
 mod cli;
@@ -33,21 +42,32 @@ fn main() {
     app.connected = true;
     app.peer_id = "test-peer-123".to_string();
 
+    let mut terminal = setup_terminal();
+    render_loop(&mut terminal, &mut app);
+    cleanup_terminal();
+}
+
+fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
     // Setup terminal
-    let mut terminal = {
+    let terminal = {
         let backend = ratatui::backend::CrosstermBackend::new(std::io::stdout());
         ratatui::Terminal::new(backend).expect("Failed to create terminal")
     };
 
-    // Configure terminal
-    crossterm::terminal::enable_raw_mode().expect("Failed to enable raw mode");
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::EnterAlternateScreen,
-        crossterm::event::EnableMouseCapture
-    )
-    .expect("Failed to setup terminal");
+    enable_raw_mode().expect("Failed to enable raw mode");
+    execute!(std::io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+        .expect("Failed to setup terminal");
 
+    terminal
+}
+
+fn cleanup_terminal() {
+    disable_raw_mode().expect("Failed to disable raw mode");
+    execute!(std::io::stdout(), LeaveAlternateScreen, DisableMouseCapture)
+        .expect("Failed to restore terminal");
+}
+
+fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) {
     // Render loop
     loop {
         terminal
@@ -74,14 +94,4 @@ fn main() {
             }
         }
     }
-
-    // Cleanup terminal
-    crossterm::terminal::disable_raw_mode().expect("Failed to disable raw mode");
-    crossterm::execute!(
-        std::io::stdout(),
-        crossterm::terminal::LeaveAlternateScreen,
-        crossterm::event::DisableMouseCapture
-    )
-    .expect("Failed to restore terminal");
-    terminal.show_cursor().expect("Failed to show cursor");
 }
