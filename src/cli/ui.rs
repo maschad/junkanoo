@@ -6,16 +6,16 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, DirectoryItem};
+use crate::app::App;
 
 pub fn render(frame: &mut Frame, app: &App) {
     // Create main layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Min(3),     // Title bar
-            Constraint::Min(10),    // Main content
-            Constraint::Length(3),  // Status bar
+            Constraint::Min(3),    // Title bar
+            Constraint::Min(10),   // Main content
+            Constraint::Length(3), // Status bar
         ])
         .split(frame.size());
 
@@ -38,14 +38,17 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
         .map(|item| {
             let prefix = if item.is_dir { "📁 " } else { "📄 " };
             let style = if Some(item.index) == app.selected_index {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
-            
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{}{}", prefix, item.name), style)
-            ]))
+
+            ListItem::new(Line::from(vec![Span::styled(
+                format!("{}{}", prefix, item.name),
+                style,
+            )]))
         })
         .collect();
 
@@ -66,7 +69,6 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     let status_widget = Paragraph::new(status)
         .style(Style::default().fg(Color::Green))
         .block(Block::default().borders(Borders::ALL));
-    
+
     frame.render_widget(status_widget, area);
 }
-
