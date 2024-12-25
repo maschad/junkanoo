@@ -14,6 +14,7 @@ pub struct DirectoryItem {
     pub is_dir: bool,
     pub index: usize,
     pub depth: usize,
+    pub selected: bool,
 }
 
 impl App {
@@ -65,4 +66,3 @@ impl App {
         false
     }
 }
-
