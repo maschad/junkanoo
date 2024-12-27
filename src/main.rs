@@ -1,8 +1,12 @@
 use std::io::Stdout;
 
 use app::App;
+use cli::ui;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers},
+    event::{
+        poll, read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
+        KeyModifiers,
+    },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -10,6 +14,7 @@ use ratatui::{prelude::CrosstermBackend, Terminal};
 
 mod app;
 mod cli;
+mod service;
 
 fn main() {
     // Initialize logging
@@ -70,16 +75,12 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
     // Render loop
     loop {
         terminal
-            .draw(|frame| cli::ui::render(frame, &app))
+            .draw(|frame| ui::render(frame, &app))
             .expect("Failed to draw");
 
-        if crossterm::event::poll(std::time::Duration::from_millis(16))
-            .expect("Failed to poll events")
-        {
-            if let crossterm::event::Event::Key(key) =
-                crossterm::event::read().expect("Failed to read event")
-            {
-                if key.kind == crossterm::event::KeyEventKind::Press {
+        if poll(std::time::Duration::from_millis(16)).expect("Failed to poll events") {
+            if let Event::Key(key) = read().expect("Failed to read event") {
+                if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break

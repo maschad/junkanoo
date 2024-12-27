@@ -17,13 +17,21 @@ async-std = "1.13.0"
 better-panic = "0.3"
 chrono = "0.4.39"
 crossbeam-channel = "0.5.14"
-clap = { version = "4.0", features = ["cargo"] }
-crossterm = "0.28.1"                                   # use the same version as tui
+clap = { version = "4.5.23", features = ["cargo"] }
+crossterm = "0.28.1" # use the same version as tui
 dirs-next = "2.0.0"
 futures = "0.3.31"
 itertools = "0.13.0"
 lazy_static = "1.5.0"
-libp2p = "0.54.1"
+libp2p = { version = "0.54.1", features = [
+	"tokio",
+	"cbor",
+	"dns",
+	"kad",
+	"macros",
+	"request-response",
+	"quic",
+] }
 parking_lot = "0.12.3"
 rclite = "0.2.4"
 serde = { version = "1.0.216", features = ["derive"] }
@@ -31,3 +39,6 @@ structopt = "0.3.26"
 ratatui = "0.29.0"
 log = "0.4.22"
 env_logger = "0.11.6"
+tokio = { version = "1.42.0", features = ["full"] }
+fake = "3.0.1"
+rand = "0.8.5"
