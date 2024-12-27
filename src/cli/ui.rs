@@ -24,19 +24,52 @@ pub fn render(frame: &mut Frame, app: &App) {
         .borders(Borders::ALL);
     frame.render_widget(main_block, frame.area());
 
-    let inner_chunks = Layout::default()
-        .direction(Direction::Vertical)
+    // Split into left and right panels
+    let horizontal_chunks = Layout::default()
+        .direction(Direction::Horizontal)
         .margin(1)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[0]);
+
+    // Left panel with file browser
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3), // Title
             Constraint::Min(10),   // File tree
             Constraint::Length(3), // Status
         ])
-        .split(chunks[0]);
+        .split(horizontal_chunks[0]);
 
-    render_title(frame, inner_chunks[0], app.is_host);
-    render_file_tree(frame, app, inner_chunks[1]);
-    render_status(frame, app, inner_chunks[2]);
+    render_title(frame, left_chunks[0], app.is_host);
+    render_file_tree(frame, app, left_chunks[1]);
+    render_status(frame, app, left_chunks[2]);
+
+    // Right panel with preview
+    let preview_block = Block::default().title(" Preview ").borders(Borders::ALL);
+
+    let preview_content = if let Some(index) = app.selected_index {
+        if let Some(item) = app.directory_items.get(index) {
+            if !item.is_dir {
+                match std::fs::read_to_string(&item.path) {
+                    Ok(contents) => contents,
+                    Err(_) => "Unable to read file contents".to_string(),
+                }
+            } else {
+                format!("Directory: {}", item.name)
+            }
+        } else {
+            "No file selected".to_string()
+        }
+    } else {
+        "No file selected".to_string()
+    };
+
+    let preview = Paragraph::new(preview_content)
+        .block(preview_block)
+        .style(Style::default().fg(Color::White));
+
+    frame.render_widget(preview, horizontal_chunks[1]);
 }
 
 fn render_title(frame: &mut Frame, area: Rect, is_host: bool) {

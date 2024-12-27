@@ -11,7 +11,9 @@ pub struct App {
     pub state: AppState,
     pub is_host: bool,
     pub items_to_share: HashSet<PathBuf>,
+    pub items_being_shared: HashSet<PathBuf>,
     pub items_to_download: HashSet<PathBuf>,
+    pub items_being_downloaded: HashSet<PathBuf>,
 }
 
 pub struct DirectoryItem {
@@ -24,10 +26,8 @@ pub struct DirectoryItem {
 }
 
 pub enum AppState {
-    Home,
     Share,
     Download,
-    SelectFile,
     Loading,
 }
 
@@ -42,7 +42,9 @@ impl App {
             state: AppState::Share,
             is_host: true,
             items_to_share: HashSet::new(),
+            items_being_shared: HashSet::new(),
             items_to_download: HashSet::new(),
+            items_being_downloaded: HashSet::new(),
         };
 
         if app.is_host && matches!(app.state, AppState::Share) {
@@ -190,5 +192,29 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    pub fn disconnect(&mut self) {
+        if self.connected && !matches!(self.state, AppState::Loading) {
+            self.connected = false;
+        }
+    }
+
+    pub fn start_share(&mut self) {
+        if !self.connected {
+            panic!("Cannot start sharing - not connected to a peer");
+        }
+        self.items_being_shared = self.items_to_share.clone();
+        self.state = AppState::Loading;
+        // TODO: Store files in peer store for remote download
+    }
+
+    pub fn start_download(&mut self) {
+        if !self.connected {
+            panic!("Cannot start downloading - not connected to a peer");
+        }
+        self.items_being_downloaded = self.items_to_download.clone();
+        self.state = AppState::Loading;
+        // TODO: Request files from peer store for remote download
     }
 }

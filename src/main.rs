@@ -81,10 +81,14 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
             {
                 if key.kind == crossterm::event::KeyEventKind::Press {
                     match key.code {
-                        KeyCode::Char('q') | KeyCode::Char('c')
-                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                        {
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break
+                        }
+                        KeyCode::Char('q') => {
+                            app.disconnect();
+                        }
+                        KeyCode::Char('u') => {
+                            app.unselect_all();
                         }
                         KeyCode::Esc => break,
                         KeyCode::Down => app.navigate_next_file(),
@@ -95,6 +99,13 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
                         KeyCode::Backspace => app.go_up_previous_directory(),
                         KeyCode::Char('y') => app.select_item(),
                         KeyCode::Char('n') => app.unselect_item(),
+                        KeyCode::Char('d') => {
+                            if app.is_host {
+                                app.start_share();
+                            } else {
+                                app.start_download();
+                            }
+                        }
                         _ => {}
                     }
                 }
