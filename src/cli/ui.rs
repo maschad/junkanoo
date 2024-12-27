@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::App;
+use crate::app::{App, AppState};
 
 pub fn render(frame: &mut Frame, app: &App) {
     // Create main layout
@@ -52,7 +52,9 @@ fn render_title(frame: &mut Frame, area: Rect, is_host: bool) {
         Span::raw(" Open dir | "),
         Span::styled("Y", Style::default().fg(Color::Yellow)),
         Span::raw(" Select | "),
-        Span::styled("Esc", Style::default().fg(Color::Yellow)),
+        Span::styled("N", Style::default().fg(Color::Yellow)),
+        Span::raw(" Unselect | "),
+        Span::styled("Backspace", Style::default().fg(Color::Yellow)),
         Span::raw(" Back"),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -65,14 +67,22 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
         .iter()
         .map(|item| {
             let indent = "  ".repeat(item.depth);
-            let selected = if item.selected { "⚪ " } else { "  " };
+            let selected = match app.state {
+                AppState::Share if app.items_to_share.contains(&item.path) => "🔵 ",
+                AppState::Download if app.items_to_download.contains(&item.path) => "🔵 ",
+                _ => "  ",
+            };
             let prefix = if item.is_dir { "📁 " } else { "📄 " };
 
             let style = if Some(item.index) == app.selected_index {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
-            } else if item.selected {
+            } else if matches!(app.state, AppState::Share)
+                && app.items_to_share.contains(&item.path)
+                || matches!(app.state, AppState::Download)
+                    && app.items_to_download.contains(&item.path)
+            {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default()

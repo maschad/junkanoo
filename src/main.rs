@@ -1,7 +1,6 @@
 use std::io::Stdout;
 
 use app::App;
-use cli::commands::get_args;
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers},
     execute,
@@ -82,15 +81,20 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
             {
                 if key.kind == crossterm::event::KeyEventKind::Press {
                     match key.code {
-                        KeyCode::Char('q') => break,
-                        KeyCode::Down => app.select_next_file(),
-                        KeyCode::Up => app.select_previous_file(),
+                        KeyCode::Char('q') | KeyCode::Char('c')
+                            if key.modifiers.contains(KeyModifiers::CONTROL) =>
+                        {
+                            break
+                        }
+                        KeyCode::Esc => break,
+                        KeyCode::Down => app.navigate_next_file(),
+                        KeyCode::Up => app.navigate_previous_file(),
                         KeyCode::Enter => {
                             app.enter_directory();
                         }
-                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                            break
-                        }
+                        KeyCode::Backspace => app.go_up_previous_directory(),
+                        KeyCode::Char('y') => app.select_item(),
+                        KeyCode::Char('n') => app.unselect_item(),
                         _ => {}
                     }
                 }
