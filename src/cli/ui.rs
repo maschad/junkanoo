@@ -17,7 +17,10 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(frame.area());
 
     let main_block = Block::default()
-        .title("Remote File Browser")
+        .title(format!(
+            "{} File Browser",
+            if app.is_host { "Host" } else { "Remote" }
+        ))
         .borders(Borders::ALL);
     frame.render_widget(main_block, frame.area());
 
@@ -31,14 +34,17 @@ pub fn render(frame: &mut Frame, app: &App) {
         ])
         .split(chunks[0]);
 
-    render_title(frame, inner_chunks[0]);
+    render_title(frame, inner_chunks[0], app.is_host);
     render_file_tree(frame, app, inner_chunks[1]);
     render_status(frame, app, inner_chunks[2]);
 }
 
-fn render_title(frame: &mut Frame, area: Rect) {
+fn render_title(frame: &mut Frame, area: Rect, is_host: bool) {
     let title = Paragraph::new(Line::from(vec![
-        Span::styled("Remote File Browser", Style::default().fg(Color::Cyan)),
+        Span::styled(
+            format!(" {} File Browser", if is_host { "Host" } else { "Remote" }),
+            Style::default().fg(Color::Cyan),
+        ),
         Span::raw(" | "),
         Span::styled("↑↓", Style::default().fg(Color::Yellow)),
         Span::raw(" Navigate | "),

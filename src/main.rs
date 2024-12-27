@@ -3,7 +3,7 @@ use std::io::Stdout;
 use app::App;
 use cli::commands::get_args;
 use crossterm::{
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{DisableMouseCapture, EnableMouseCapture, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -82,11 +82,14 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
             {
                 if key.kind == crossterm::event::KeyEventKind::Press {
                     match key.code {
-                        crossterm::event::KeyCode::Char('q') => break,
-                        crossterm::event::KeyCode::Down => app.select_next(),
-                        crossterm::event::KeyCode::Up => app.select_previous(),
-                        crossterm::event::KeyCode::Enter => {
+                        KeyCode::Char('q') => break,
+                        KeyCode::Down => app.select_next_file(),
+                        KeyCode::Up => app.select_previous_file(),
+                        KeyCode::Enter => {
                             app.enter_directory();
+                        }
+                        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                            break
                         }
                         _ => {}
                     }
