@@ -1,4 +1,5 @@
 use fake::{Fake, Faker};
+use libp2p::PeerId;
 use rand::Rng;
 
 /// Generates a BIP39 mnemonic phrase with the specified number of words
@@ -25,6 +26,22 @@ pub fn generate_mnemonic(word_count: usize) -> String {
     }
 
     // Join with spaces
+    words.join("-")
+}
+
+pub fn peer_id_to_mnemonic(peer_id: PeerId) -> String {
+    let mut rng = rand::thread_rng();
+    let mut words = Vec::with_capacity(12);
+
+    // Get the BIP39 word list
+    let word_list = (0..2048)
+        .map(|_| Faker.fake::<String>())
+        .collect::<Vec<String>>();
+
+    for _ in 0..12 {
+        let index = rng.gen_range(0..word_list.len());
+        words.push(word_list[index].clone());
+    }
     words.join("-")
 }
 

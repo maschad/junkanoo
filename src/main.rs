@@ -43,6 +43,7 @@ fn main() {
     // }
 
     let mut app = app::App::new();
+    // Just for testing
     app.connected = true;
     app.peer_id = "test-peer-123".to_string();
 
