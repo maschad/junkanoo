@@ -19,33 +19,39 @@ mod service;
 fn main() {
     // Initialize logging
     env_logger::init();
-    // let matches = get_args().get_matches();
+    let matches = cli::commands::get_args().get_matches();
+    // Initialize app
+    let mut app: App = app::App::new();
 
-    // match matches.subcommand() {
-    //     Some(("send", sub_matches)) => {
-    //         println!(
-    //             "Sending file: {}",
-    //             sub_matches
-    //                 .get_one::<String>("file_path")
-    //                 .expect("file path is required")
-    //         );
-    //     }
-    //     Some(("receive", sub_matches)) => {
-    //         println!(
-    //             "Connecting to peer: {}",
-    //             sub_matches
-    //                 .get_one::<String>("peer_identifier")
-    //                 .expect("peer identifier is required")
-    //         );
-    //     }
+    match matches.subcommand() {
+        Some(("share", sub_matches)) => {
+            app.state = app::AppState::Share;
+            app.is_host = true;
+            app.current_path = std::path::PathBuf::from(
+                sub_matches
+                    .get_one::<String>("FILE_PATH")
+                    .expect("file path is required"),
+            );
+        }
+        Some(("download", sub_matches)) => {
+            app.state = app::AppState::Download;
+            app.is_host = false;
+            app.current_path = std::path::PathBuf::from(
+                sub_matches
+                    .get_one::<String>("PEER_IDENTIFIER")
+                    .expect("peer identifier is required"),
+            );
+        }
 
-    //     _ => println!("Unknown subcommand"),
-    // }
+        _ => println!("Unknown subcommand"),
+    }
 
-    let mut app = app::App::new();
-    // Just for testing
-    app.connected = true;
-    app.peer_id = "test-peer-123".to_string();
+    let (client, event_stream, event_loop, peer_id) = tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(async { service::node::new().await })
+        .unwrap();
+
+    app.peer_id = peer_id;
 
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, &mut app);

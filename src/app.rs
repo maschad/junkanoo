@@ -1,3 +1,4 @@
+use libp2p::PeerId;
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
@@ -7,7 +8,7 @@ pub struct App {
     pub selected_index: Option<usize>,
     pub current_path: PathBuf,
     pub connected: bool,
-    pub peer_id: String,
+    pub peer_id: PeerId,
     pub state: AppState,
     pub is_host: bool,
     pub items_to_share: HashSet<PathBuf>,
@@ -39,7 +40,7 @@ impl App {
             selected_index: None,
             current_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             connected: false,
-            peer_id: String::new(),
+            peer_id: PeerId::random(),
             state: AppState::Share,
             is_host: true,
             items_to_share: HashSet::new(),

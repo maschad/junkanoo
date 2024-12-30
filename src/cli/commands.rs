@@ -7,31 +7,19 @@ pub fn get_args() -> Command {
         .about(env!("CARGO_PKG_DESCRIPTION"))
         .subcommand_required(true)
         .arg_required_else_help(true)
-        .arg(
-            arg!(-d --"dht-only" "Use only DHT for peer discovery")
-                .id("dht")
-                .conflicts_with("mdns"),
-        )
-        .arg(
-            arg!(-m --"mdns-only" "Use only mDNS for peer discovery")
-                .id("mdns")
-                .conflicts_with("dht"),
-        )
         .arg(arg!(-v --debug "Print debug information"))
         .subcommand(
-            Command::new("send")
+            Command::new("share")
                 .about("Send a file or directory to another peer")
                 .arg(arg!(<FILE_PATH> "The file path or directory to send"))
                 .arg_required_else_help(true),
         )
         .subcommand(
-            Command::new("receive")
+            Command::new("download")
                 .about("Receive a file or directory from another peer")
                 .arg(arg!(<PEER_IDENTIFIER> "The peer identifier to connect to"))
                 .arg_required_else_help(true),
         )
-        .subcommand(Command::new("list-peers").about("List all available peers"))
-        .subcommand(Command::new("status").about("Show status of current connections"))
 }
 
 #[cfg(test)]
@@ -53,24 +41,18 @@ mod tests {
         // Test send subcommand
         let send = app
             .get_subcommands()
-            .find(|cmd| cmd.get_name() == "send")
+            .find(|cmd| cmd.get_name() == "share")
             .unwrap();
         assert!(send.is_arg_required_else_help_set());
         assert_eq!(send.get_arguments().count(), 1);
 
         // Test receive subcommand
-        let receive = app
+        let download = app
             .get_subcommands()
-            .find(|cmd| cmd.get_name() == "receive")
+            .find(|cmd| cmd.get_name() == "download")
             .unwrap();
-        assert!(receive.is_arg_required_else_help_set());
-        assert_eq!(receive.get_arguments().count(), 1);
-
-        // Test list-peers and status subcommands exist
-        assert!(app
-            .get_subcommands()
-            .any(|cmd| cmd.get_name() == "list-peers"));
-        assert!(app.get_subcommands().any(|cmd| cmd.get_name() == "status"));
+        assert!(download.is_arg_required_else_help_set());
+        assert_eq!(download.get_arguments().count(), 1);
     }
 
     #[test]
