@@ -11,8 +11,7 @@ pub fn get_args() -> Command {
         .subcommand(
             Command::new("share")
                 .about("Send a file or directory to another peer")
-                .arg(arg!(<FILE_PATH> "The file path or directory to send"))
-                .arg_required_else_help(true),
+                .arg(arg!([FILE_PATH] "The file path or directory to send (defaults to current directory)")),
         )
         .subcommand(
             Command::new("download")

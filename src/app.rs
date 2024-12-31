@@ -1,10 +1,11 @@
 use libp2p::PeerId;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
 pub struct App {
     pub directory_items: Vec<DirectoryItem>,
+    pub directory_cache: HashMap<PathBuf, Vec<DirectoryItem>>,
     pub selected_index: Option<usize>,
     pub current_path: PathBuf,
     pub connected: bool,
@@ -17,6 +18,7 @@ pub struct App {
     pub items_being_downloaded: HashSet<PathBuf>,
 }
 
+#[derive(Clone)]
 pub struct DirectoryItem {
     pub name: String,
     pub path: PathBuf,
@@ -37,6 +39,7 @@ impl App {
     pub fn new() -> Self {
         let mut app = App {
             directory_items: Vec::new(),
+            directory_cache: HashMap::new(),
             selected_index: None,
             current_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             connected: false,
@@ -57,6 +60,12 @@ impl App {
     }
 
     fn populate_directory_items(&mut self) {
+        // Check if we have cached items for this directory
+        if let Some(cached_items) = self.directory_cache.get(&self.current_path) {
+            self.directory_items = cached_items.clone();
+            return;
+        }
+
         self.directory_items.clear();
         if let Ok(entries) = fs::read_dir(&self.current_path) {
             for (index, entry) in entries.flatten().enumerate() {
@@ -95,6 +104,10 @@ impl App {
             for (i, item) in self.directory_items.iter_mut().enumerate() {
                 item.index = i;
             }
+
+            // Cache the items for this directory
+            self.directory_cache
+                .insert(self.current_path.clone(), self.directory_items.clone());
         }
     }
 
@@ -157,6 +170,12 @@ impl App {
                     _ => {}
                 }
                 item.selected = true;
+                // Update the cached version
+                if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path) {
+                    if let Some(cached_item) = cached_items.get_mut(index) {
+                        cached_item.selected = true;
+                    }
+                }
             }
         }
     }
@@ -174,6 +193,12 @@ impl App {
                     _ => {}
                 }
                 item.selected = false;
+                // Update the cached version
+                if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path) {
+                    if let Some(cached_item) = cached_items.get_mut(index) {
+                        cached_item.selected = false;
+                    }
+                }
             }
         }
     }
@@ -185,11 +210,23 @@ impl App {
                 for item in self.directory_items.iter_mut() {
                     item.selected = false;
                 }
+                // Update cache
+                if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path) {
+                    for item in cached_items.iter_mut() {
+                        item.selected = false;
+                    }
+                }
             }
             AppState::Download => {
                 self.items_to_download.clear();
                 for item in self.directory_items.iter_mut() {
                     item.selected = false;
+                }
+                // Update cache
+                if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path) {
+                    for item in cached_items.iter_mut() {
+                        item.selected = false;
+                    }
                 }
             }
             _ => {}

@@ -18,8 +18,9 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     let main_block = Block::default()
         .title(format!(
-            "{} File Browser",
-            if app.is_host { "Host" } else { "Remote" }
+            "{} File Browser - PeerID: {}",
+            if app.is_host { "Host" } else { "Remote" },
+            app.peer_id.to_string()
         ))
         .borders(Borders::ALL);
     frame.render_widget(main_block, frame.area());
@@ -87,6 +88,8 @@ fn render_title(frame: &mut Frame, area: Rect, is_host: bool) {
         Span::raw(" Select | "),
         Span::styled("N", Style::default().fg(Color::Yellow)),
         Span::raw(" Unselect | "),
+        Span::styled("U", Style::default().fg(Color::Yellow)),
+        Span::raw(" Unselect all | "),
         Span::styled("Backspace", Style::default().fg(Color::Yellow)),
         Span::raw(" Back"),
     ]))
@@ -142,14 +145,19 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
+    let total_selected = match app.state {
+        AppState::Share => app.items_to_share.len(),
+        AppState::Download => app.items_to_download.len(),
+        _ => 0,
+    };
+
     let status = if app.connected {
         format!(
             "Connected to: {} | Selected items: {}",
-            app.peer_id,
-            app.directory_items.iter().filter(|i| i.selected).count()
+            app.peer_id, total_selected
         )
     } else {
-        "Disconnected".to_string()
+        format!("Disconnected | Selected items: {}", total_selected)
     };
 
     let status_style = if app.connected {

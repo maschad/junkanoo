@@ -27,11 +27,10 @@ fn main() {
         Some(("share", sub_matches)) => {
             app.state = app::AppState::Share;
             app.is_host = true;
-            app.current_path = std::path::PathBuf::from(
-                sub_matches
-                    .get_one::<String>("FILE_PATH")
-                    .expect("file path is required"),
-            );
+            app.current_path = sub_matches
+                .get_one::<String>("FILE_PATH")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         }
         Some(("download", sub_matches)) => {
             app.state = app::AppState::Download;
