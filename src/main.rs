@@ -10,7 +10,7 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use libp2p::Multiaddr;
+use libp2p::{multiaddr::Protocol, Multiaddr};
 use ratatui::{prelude::CrosstermBackend, Terminal};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
@@ -70,7 +70,10 @@ fn main() {
     }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    rt.block_on(start_network(&mut app, target_peer_addr));
+    if let Err(e) = rt.block_on(start_network(&mut app, target_peer_addr)) {
+        tracing::error!("Network error: {}", e);
+        std::process::exit(1);
+    }
 
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, &mut app);
@@ -141,16 +144,32 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
     }
 }
 
-async fn start_network(app: &mut App, target_peer_addr: Option<Multiaddr>) {
-    let (mut client, event_stream, event_loop, listening_addrs, peer_id) =
-        service::node::new().await.unwrap();
+async fn start_network(
+    app: &mut App,
+    target_peer_addr: Option<Multiaddr>,
+) -> Result<(), &'static str> {
+    let (mut client, event_stream, event_loop, peer_id) = service::node::new().await.unwrap();
+
+    client
+        .start_listening("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .await
+        .expect("Listening not to fail.");
+
+    let listening_addrs = client.get_listening_addrs().await.unwrap();
 
     app.peer_id = peer_id;
     app.listening_addrs = listening_addrs;
 
-    if !app.is_host {
-        client.dial(target_peer_addr.unwrap()).await.unwrap();
+    let Some(Protocol::P2p(target_peer_id)) = target_peer_addr.as_ref().unwrap().iter().last()
+    else {
+        return Err("Expect peer multiaddr to contain peer ID.");
+    };
 
-        // tokio::spawn(client.connection_handler(peer_id, listening_addrs));
+    if !app.is_host {
+        client
+            .dial(target_peer_id, target_peer_addr.unwrap())
+            .await
+            .unwrap();
     }
+    Ok(())
 }

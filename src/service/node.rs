@@ -7,14 +7,15 @@ use libp2p::{
     identity::Keypair,
     kad,
     multiaddr::{Multiaddr, Protocol},
+    request_response::{self, OutboundRequestId, ProtocolSupport, ResponseChannel},
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
     PeerId, StreamProtocol, SwarmBuilder,
 };
 use libp2p_stream as stream;
-use rand::{thread_rng, RngCore};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map, HashMap},
     error::Error,
     time::Duration,
 };
@@ -35,16 +36,8 @@ const JUNKANOO_PROTOCOL: StreamProtocol = StreamProtocol::new("/junkanoo");
 /// - The network event stream, e.g. for incoming requests.
 ///
 /// - The network task driving the network itself.
-pub(crate) async fn new() -> Result<
-    (
-        Client,
-        impl Stream<Item = Event>,
-        EventLoop,
-        Vec<Multiaddr>,
-        PeerId,
-    ),
-    Box<dyn Error>,
-> {
+pub(crate) async fn new(
+) -> Result<(Client, impl Stream<Item = Event>, EventLoop, PeerId), Box<dyn Error>> {
     // Create a public/private key pair, either random or based on a seed.
     let id_keys = Keypair::generate_ed25519();
     let peer_id = id_keys.public().to_peer_id();
@@ -57,7 +50,11 @@ pub(crate) async fn new() -> Result<
                 peer_id,
                 kad::store::MemoryStore::new(key.public().to_peer_id()),
             ),
-            stream: stream::Behaviour::new(),
+            request_response: request_response::cbor::Behaviour::new(
+                [(JUNKANOO_PROTOCOL, ProtocolSupport::Full)],
+                request_response::Config::default(),
+            ),
+            file_stream: stream::Behaviour::new(),
         })?
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(10)))
         .build();
@@ -72,36 +69,13 @@ pub(crate) async fn new() -> Result<
             .add_address(&peer.parse()?, "/dnsaddr/bootstrap.libp2p.io".parse()?);
     }
 
-    let mut incoming_streams = swarm
-        .behaviour()
-        .stream
-        .new_control()
-        .accept(JUNKANOO_PROTOCOL)
-        .unwrap();
-
-    // Deal with incoming streams.
-    // Spawning a dedicated task is just one way of doing this.
-    // libp2p doesn't care how you handle incoming streams but you _must_ handle them somehow.
-    // To mitigate DoS attacks, libp2p will internally drop incoming streams if your application
-    // cannot keep up processing them.
-    tokio::spawn(async move {
-        // This loop handles incoming streams _sequentially_ but that doesn't have to be the case.
-        // You can also spawn a dedicated task per stream if you want to.
-        // Be aware that this breaks backpressure though as spawning new tasks is equivalent to an
-        // unbounded buffer. Each task needs memory meaning an aggressive remote peer may
-        // force you OOM this way.
-
-        while let Some((peer, stream)) = incoming_streams.next().await {
-            // Send data to the peer
-        }
-    });
+    swarm
+        .behaviour_mut()
+        .kademlia
+        .set_mode(Some(kad::Mode::Server));
 
     let (command_sender, command_receiver) = mpsc::channel(0);
     let (event_sender, event_receiver) = mpsc::channel(0);
-
-    swarm.listen_on("/ip4/127.0.0.1/udp/0/quic-v1".parse()?)?;
-
-    let listeners = swarm.listeners().map(|addr| addr.clone()).collect();
 
     Ok((
         Client {
@@ -109,7 +83,6 @@ pub(crate) async fn new() -> Result<
         },
         event_receiver,
         EventLoop::new(swarm, command_receiver, event_sender),
-        listeners,
         peer_id,
     ))
 }
@@ -128,6 +101,17 @@ impl Client {
         let (sender, receiver) = oneshot::channel();
         self.sender
             .send(Command::StartListening { addr, sender })
+            .await
+            .expect("Command receiver not to be dropped.");
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    pub(crate) async fn get_listening_addrs(
+        &mut self,
+    ) -> Result<Vec<Multiaddr>, Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::GetListeningAddrs { sender })
             .await
             .expect("Command receiver not to be dropped.");
         receiver.await.expect("Sender not to be dropped.")
@@ -152,31 +136,55 @@ impl Client {
         Ok(())
     }
 
-    /// `async fn`-based connection handler for our custom junkanoo protocol.
-    pub(crate) async fn connection_handler(&self, peer: PeerId, mut control: stream::Control) {
-        loop {
-            tokio::time::sleep(Duration::from_secs(1)).await;
-
-            let stream = match control.open_stream(peer, JUNKANOO_PROTOCOL).await {
-                Ok(stream) => stream,
-                Err(error @ stream::OpenStreamError::UnsupportedProtocol(_)) => return,
-                Err(_) => continue,
-            };
-
-            if let Err(_) = self.send(stream).await {
-                continue;
-            }
-        }
-    }
-
     /// Dial the given peer at the given address.
-    pub(crate) async fn dial(&mut self, peer_addr: Multiaddr) -> Result<(), Box<dyn Error + Send>> {
+    pub(crate) async fn dial(
+        &mut self,
+        peer_id: PeerId,
+        peer_addr: Multiaddr,
+    ) -> Result<(), Box<dyn Error + Send>> {
         let (sender, receiver) = oneshot::channel();
         self.sender
-            .send(Command::Dial { peer_addr, sender })
+            .send(Command::Dial {
+                peer_id,
+                peer_addr,
+                sender,
+            })
             .await
             .expect("Command receiver not to be dropped.");
         receiver.await.expect("Sender not to be dropped.")
+    }
+
+    /// Request the content of the given file from the given peer.
+    pub(crate) async fn request_file(
+        &mut self,
+        file_names: Vec<String>,
+        peer_id: PeerId,
+    ) -> Result<Vec<u8>, Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::RequestFiles {
+                peer_id,
+                file_names,
+                sender,
+            })
+            .await
+            .expect("Command receiver not to be dropped.");
+        receiver.await.expect("Sender not be dropped.")
+    }
+
+    /// Respond with the provided file content to the given request.
+    pub(crate) async fn respond_file(
+        &mut self,
+        file_metadata: Vec<FileMetadata>,
+        channel: ResponseChannel<FileResponse>,
+    ) {
+        self.sender
+            .send(Command::RespondFiles {
+                file_metadata,
+                channel,
+            })
+            .await
+            .expect("Command receiver not to be dropped.");
     }
 }
 
@@ -185,6 +193,10 @@ pub(crate) struct EventLoop {
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<Event>,
     pending_dial: HashMap<PeerId, oneshot::Sender<Result<(), Box<dyn Error + Send>>>>,
+    pending_request_file:
+        HashMap<OutboundRequestId, oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send>>>>,
+    pending_request_display:
+        HashMap<OutboundRequestId, oneshot::Sender<Result<Vec<String>, Box<dyn Error + Send>>>>,
 }
 
 impl EventLoop {
@@ -198,6 +210,8 @@ impl EventLoop {
             command_receiver,
             event_sender,
             pending_dial: Default::default(),
+            pending_request_file: Default::default(),
+            pending_request_display: Default::default(),
         }
     }
 
@@ -217,21 +231,11 @@ impl EventLoop {
     async fn handle_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
         match event {
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
-                eprintln!("New external address of peer {peer_id}: {address}");
+                tracing::debug!("New external address of peer {peer_id}: {address}");
             }
-            SwarmEvent::Behaviour(BehaviourEvent::Kademlia(
-                kad::Event::OutboundQueryProgressed {
-                    result:
-                        kad::QueryResult::GetProviders(Ok(
-                            kad::GetProvidersOk::FinishedWithNoAdditionalRecord { .. },
-                        )),
-                    ..
-                },
-            )) => {}
-            SwarmEvent::Behaviour(BehaviourEvent::Kademlia(_)) => {}
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local_peer_id = *self.swarm.local_peer_id();
-                eprintln!(
+                tracing::debug!(
                     "Local node is listening on {:?}",
                     address.with(Protocol::P2p(local_peer_id))
                 );
@@ -245,6 +249,7 @@ impl EventLoop {
                         let _ = sender.send(Ok(()));
                     }
                 }
+                tracing::debug!("Connected to {peer_id}");
             }
             SwarmEvent::ConnectionClosed { .. } => {}
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -258,7 +263,7 @@ impl EventLoop {
             SwarmEvent::Dialing {
                 peer_id: Some(peer_id),
                 ..
-            } => eprintln!("Dialing {peer_id}"),
+            } => tracing::debug!("Dialing {peer_id}"),
             e => panic!("{e:?}"),
         }
     }
@@ -271,19 +276,64 @@ impl EventLoop {
                     Err(e) => sender.send(Err(Box::new(e))),
                 };
             }
-            Command::Dial { peer_addr, sender } => match self.swarm.dial(peer_addr) {
-                Ok(()) => {
-                    let _ = sender.send(Ok(()));
+            Command::Dial {
+                peer_id,
+                peer_addr,
+                sender,
+            } => {
+                if let hash_map::Entry::Vacant(e) = self.pending_dial.entry(peer_id) {
+                    self.swarm
+                        .behaviour_mut()
+                        .kademlia
+                        .add_address(&peer_id, peer_addr.clone());
+                    match self.swarm.dial(peer_addr.with(Protocol::P2p(peer_id))) {
+                        Ok(()) => {
+                            e.insert(sender);
+                        }
+                        Err(e) => {
+                            let _ = sender.send(Err(Box::new(e)));
+                        }
+                    }
+                } else {
+                    todo!("Already dialing peer.");
                 }
-                Err(e) => {
-                    let _ = sender.send(Err(Box::new(e)));
-                }
-            },
+            }
             Command::FindPeer { peer_id, sender } => {
                 let _ = sender.send(());
             }
-            Command::OpenStream { peer_id, sender } => {
-                let _ = sender.send(());
+            Command::RequestFiles {
+                peer_id,
+                file_names,
+                sender,
+            } => {
+                // #TODO: Open a stream allowing users to download files
+            }
+            Command::RespondFiles {
+                file_metadata,
+                channel,
+            } => {
+                // #TODO: Stream files as well as the download status
+            }
+            Command::GetListeningAddrs { sender } => {
+                let _ = sender.send(Ok(self.swarm.listeners().cloned().collect()));
+            }
+            Command::RequestDisplay { peer_id, sender } => {
+                let request_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, DisplayRequest);
+                self.pending_request_display.insert(request_id, sender);
+            }
+            Command::RespondDisplay {
+                display_response,
+                channel,
+            } => {
+                self.swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_response(channel, display_response)
+                    .expect("Connection to peer to be still open.");
             }
         }
     }
@@ -291,8 +341,9 @@ impl EventLoop {
 
 #[derive(NetworkBehaviour)]
 struct Behaviour {
-    stream: stream::Behaviour,
+    request_response: request_response::cbor::Behaviour<DisplayRequest, DisplayResponse>,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
+    file_stream: stream::Behaviour,
 }
 
 #[derive(Debug)]
@@ -302,6 +353,7 @@ enum Command {
         sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
     },
     Dial {
+        peer_id: PeerId,
         peer_addr: Multiaddr,
         sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
     },
@@ -309,9 +361,25 @@ enum Command {
         peer_id: PeerId,
         sender: oneshot::Sender<()>,
     },
-    OpenStream {
+    RequestFiles {
         peer_id: PeerId,
-        sender: oneshot::Sender<()>,
+        file_names: Vec<String>,
+        sender: oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send>>>,
+    },
+    RespondFiles {
+        file_metadata: Vec<FileMetadata>,
+        channel: ResponseChannel<FileResponse>,
+    },
+    GetListeningAddrs {
+        sender: oneshot::Sender<Result<Vec<Multiaddr>, Box<dyn Error + Send>>>,
+    },
+    RequestDisplay {
+        peer_id: PeerId,
+        sender: oneshot::Sender<Result<Vec<String>, Box<dyn Error + Send>>>,
+    },
+    RespondDisplay {
+        display_response: DisplayResponse,
+        channel: ResponseChannel<DisplayResponse>,
     },
 }
 
@@ -322,6 +390,29 @@ pub(crate) enum Event {
 
 // Simple file exchange protocol
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct FileRequest(String);
+struct DisplayRequest;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FileResponse(Vec<u8>);
+enum FileResponse {
+    DirectoryListing(Vec<DisplayResponse>),
+    DownloadInfo(Vec<FileMetadata>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct DisplayResponse {
+    pub path: String,
+    pub is_dir: bool,
+    pub size: u64,
+    pub preview_content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct FileMetadata {
+    pub path: String,
+    pub size: u64,
+    pub chunks: u64,
+}
+
+// Simple file exchange protocol
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct FileRequest(Vec<String>);
