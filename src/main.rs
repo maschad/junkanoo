@@ -10,7 +10,10 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use libp2p::Multiaddr;
 use ratatui::{prelude::CrosstermBackend, Terminal};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::EnvFilter;
 
 mod app;
 mod cli;
@@ -18,10 +21,21 @@ mod service;
 
 fn main() {
     // Initialize logging
-    env_logger::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env()
+                .unwrap(),
+        )
+        .init();
     let matches = cli::commands::get_args().get_matches();
+
     // Initialize app
     let mut app: App = app::App::new();
+
+    // Handle peer ID for download command
+    let mut target_peer_addr: Option<Multiaddr> = None;
 
     match matches.subcommand() {
         Some(("share", sub_matches)) => {
@@ -35,22 +49,28 @@ fn main() {
         Some(("download", sub_matches)) => {
             app.state = app::AppState::Download;
             app.is_host = false;
-            app.current_path = std::path::PathBuf::from(
-                sub_matches
-                    .get_one::<String>("PEER_IDENTIFIER")
-                    .expect("peer identifier is required"),
-            );
+            if let Some(peer_addr_str) = sub_matches.get_one::<String>("PEER_ADDR_IDENTIFIER") {
+                // Parse the peer ID string into a PeerId
+                match peer_addr_str.parse::<Multiaddr>() {
+                    Ok(peer_addr) => {
+                        target_peer_addr = Some(peer_addr);
+                    }
+                    Err(e) => {
+                        eprintln!("Invalid peer ID format: {}", e);
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!("Peer ID is required for download command");
+                std::process::exit(1);
+            }
         }
 
         _ => println!("Unknown subcommand"),
     }
 
-    let (client, event_stream, event_loop, peer_id) = tokio::runtime::Runtime::new()
-        .unwrap()
-        .block_on(async { service::node::new().await })
-        .unwrap();
-
-    app.peer_id = peer_id;
+    let rt = tokio::runtime::Runtime::new().unwrap();
+    rt.block_on(start_network(&mut app, target_peer_addr));
 
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, &mut app);
@@ -118,5 +138,19 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
                 }
             }
         }
+    }
+}
+
+async fn start_network(app: &mut App, target_peer_addr: Option<Multiaddr>) {
+    let (mut client, event_stream, event_loop, listening_addrs, peer_id) =
+        service::node::new().await.unwrap();
+
+    app.peer_id = peer_id;
+    app.listening_addrs = listening_addrs;
+
+    if !app.is_host {
+        client.dial(target_peer_addr.unwrap()).await.unwrap();
+
+        // tokio::spawn(client.connection_handler(peer_id, listening_addrs));
     }
 }

@@ -16,7 +16,7 @@ pub fn get_args() -> Command {
         .subcommand(
             Command::new("download")
                 .about("Receive a file or directory from another peer")
-                .arg(arg!(<PEER_IDENTIFIER> "The peer identifier to connect to"))
+                .arg(arg!(<PEER_ADDR_IDENTIFIER> "The multiaddr to connect to"))
                 .arg_required_else_help(true),
         )
 }

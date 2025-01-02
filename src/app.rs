@@ -1,4 +1,4 @@
-use libp2p::PeerId;
+use libp2p::{Multiaddr, PeerId};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
@@ -10,6 +10,7 @@ pub struct App {
     pub current_path: PathBuf,
     pub connected: bool,
     pub peer_id: PeerId,
+    pub listening_addrs: Vec<Multiaddr>,
     pub state: AppState,
     pub is_host: bool,
     pub items_to_share: HashSet<PathBuf>,
@@ -46,6 +47,7 @@ impl App {
             peer_id: PeerId::random(),
             state: AppState::Share,
             is_host: true,
+            listening_addrs: Vec::new(),
             items_to_share: HashSet::new(),
             items_being_shared: HashSet::new(),
             items_to_download: HashSet::new(),

@@ -12,6 +12,8 @@ lto = true
 
 
 [dependencies]
+ratatui = "0.29.0"
+tokio = { version = "1.42.0", features = ["full"] }
 anyhow = "1.0.95"
 async-std = "1.13.0"
 better-panic = "0.3"
@@ -21,7 +23,7 @@ clap = { version = "4.5.23", features = ["cargo"] }
 crossterm = "0.28.1" # use the same version as tui
 dirs-next = "2.0.0"
 futures = "0.3.31"
-itertools = "0.13.0"
+itertools = "0.14.0"
 lazy_static = "1.5.0"
 libp2p = { version = "0.54.1", features = [
 	"tokio",
@@ -36,10 +38,6 @@ parking_lot = "0.12.3"
 rclite = "0.2.4"
 serde = { version = "1.0.217", features = ["derive"] }
 structopt = "0.3.26"
-ratatui = "0.29.0"
-log = "0.4.22"
-env_logger = "0.11.6"
-tokio = { version = "1.42.0", features = ["full"] }
 fake = "3.1.0"
 rand = "0.8.5"
 bs58 = "0.5.1"
@@ -48,3 +46,6 @@ bip39 = "2.1.0"
 mime_guess = "2.0.5"
 async-stream = "0.3.6"
 async-walkdir = "2.0.0"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+libp2p-stream = "0.2.0-alpha"
