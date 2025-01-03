@@ -61,6 +61,7 @@ fn main() {
                         target_peer_addr = Some(peer_addr);
                     }
                     Err(e) => {
+                        tracing::debug!("peer_addr_str: {:?}", peer_addr_str);
                         tracing::error!("Invalid peer ID format: {}", e);
                         std::process::exit(1);
                     }

@@ -39,12 +39,14 @@ pub fn render(frame: &mut Frame, app: &App) {
             Constraint::Length(3), // Title
             Constraint::Min(10),   // File tree
             Constraint::Length(3), // Status
+            Constraint::Length(3), // Connect info
         ])
         .split(horizontal_chunks[0]);
 
     render_title(frame, left_chunks[0], app.is_host);
     render_file_tree(frame, app, left_chunks[1]);
     render_status(frame, app, left_chunks[2]);
+    render_connect_info(frame, app, left_chunks[3]);
 
     // Right panel with preview
     let preview_block = Block::default().title(" Preview ").borders(Borders::ALL);
@@ -157,20 +159,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             app.peer_id, total_selected
         )
     } else {
-        let addrs = if app.listening_addrs.is_empty() {
-            "No listening addresses available".to_string()
-        } else {
-            app.listening_addrs
-                .iter()
-                .filter(|addr| !addr.to_string().contains("127.0.0"))
-                .map(|addr| format!("{}/p2p/{}", addr, app.peer_id))
-                .collect::<Vec<_>>()
-                .join(" or ")
-        };
-        format!(
-            "Disconnected | Selected items: {} | To connect, dial: {}",
-            total_selected, addrs
-        )
+        format!("Disconnected | Selected items: {}", total_selected)
     };
 
     let status_style = if app.connected {
@@ -184,4 +173,24 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::ALL));
 
     frame.render_widget(status_widget, area);
+}
+
+fn render_connect_info(frame: &mut Frame, app: &App, area: Rect) {
+    let addrs = if app.listening_addrs.is_empty() {
+        "No listening addresses available".to_string()
+    } else {
+        app.listening_addrs
+            .iter()
+            .filter(|addr: &&libp2p::Multiaddr| !addr.to_string().contains("127.0.0"))
+            .map(|addr| format!("{}/p2p/{}", addr, app.peer_id))
+            .collect::<Vec<_>>()
+            .join(" or ")
+    };
+
+    let connect_text = format!("Addresses: {}", addrs);
+    let connect_widget = Paragraph::new(connect_text)
+        .style(Style::default().fg(Color::Yellow))
+        .block(Block::default().borders(Borders::ALL));
+
+    frame.render_widget(connect_widget, area);
 }
