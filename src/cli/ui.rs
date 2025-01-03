@@ -157,7 +157,19 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
             app.peer_id, total_selected
         )
     } else {
-        format!("Disconnected | Selected items: {}", total_selected)
+        let addrs = if app.listening_addrs.is_empty() {
+            "No listening addresses available".to_string()
+        } else {
+            app.listening_addrs
+                .iter()
+                .map(|addr| format!("{}/p2p/{}", addr, app.peer_id))
+                .collect::<Vec<_>>()
+                .join(" or ")
+        };
+        format!(
+            "Disconnected | Selected items: {} | To connect, dial: {}",
+            total_selected, addrs
+        )
     };
 
     let status_style = if app.connected {

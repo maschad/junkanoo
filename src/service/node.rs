@@ -7,9 +7,10 @@ use libp2p::{
     identity::Keypair,
     kad,
     multiaddr::{Multiaddr, Protocol},
+    noise,
     request_response::{self, OutboundRequestId, ProtocolSupport, ResponseChannel},
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
-    PeerId, StreamProtocol, SwarmBuilder,
+    tcp, yamux, PeerId, StreamProtocol, SwarmBuilder,
 };
 use libp2p_stream as stream;
 use rand::RngCore;
@@ -46,6 +47,11 @@ pub(crate) async fn new(
 
     let mut swarm = SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
         .with_quic()
         .with_behaviour(|key| Behaviour {
             kademlia: kad::Behaviour::new(
@@ -61,20 +67,21 @@ pub(crate) async fn new(
         .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(10)))
         .build();
 
-    // Add the bootnodes to the local routing table. `libp2p-dns` built
-    // into the `transport` resolves the `dnsaddr` when Kademlia tries
-    // to dial these nodes.
-    for peer in &BOOTNODES {
-        swarm
-            .behaviour_mut()
-            .kademlia
-            .add_address(&peer.parse()?, "/dnsaddr/bootstrap.libp2p.io".parse()?);
-    }
-
+    // Set Kademlia into server mode before adding bootnodes
     swarm
         .behaviour_mut()
         .kademlia
         .set_mode(Some(kad::Mode::Server));
+
+    // Then add the bootnodes
+    for peer in &BOOTNODES {
+        if let Ok(peer_id) = peer.parse() {
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&peer_id, "/dnsaddr/bootstrap.libp2p.io".parse()?);
+        }
+    }
 
     let (command_sender, command_receiver) = mpsc::channel(0);
     let (event_sender, event_receiver) = mpsc::channel(0);
@@ -255,6 +262,43 @@ impl EventLoop {
                     address.with(Protocol::P2p(local_peer_id))
                 );
             }
+            SwarmEvent::Behaviour(BehaviourEvent::Kademlia(_)) => {}
+            SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
+                request_response::Event::Message { message, .. },
+            )) => match message {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
+                    self.event_sender
+                        .send(Event::InboundRequest { request, channel })
+                        .await
+                        .expect("Event receiver not to be dropped.");
+                }
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                } => {
+                    let _ = self
+                        .pending_request_display
+                        .remove(&request_id)
+                        .expect("Request to still be pending.")
+                        .send(Ok(response));
+                }
+            },
+            SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
+                request_response::Event::OutboundFailure {
+                    request_id, error, ..
+                },
+            )) => {
+                let _ = self
+                    .pending_request_display
+                    .remove(&request_id)
+                    .expect("Request to still be pending.")
+                    .send(Err(Box::new(error)));
+            }
+            SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
+                request_response::Event::ResponseSent { .. },
+            )) => {}
             SwarmEvent::IncomingConnection { .. } => {}
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
@@ -279,7 +323,7 @@ impl EventLoop {
                 peer_id: Some(peer_id),
                 ..
             } => tracing::debug!("Dialing {peer_id}"),
-            e => panic!("{e:?}"),
+            e => tracing::debug!("{e:?}"),
         }
     }
 
@@ -400,10 +444,12 @@ enum Command {
 
 #[derive(Debug)]
 pub(crate) enum Event {
-    InboundRequest { request: String },
+    InboundRequest {
+        request: DisplayRequest,
+        channel: ResponseChannel<DisplayResponse>,
+    },
 }
 
-// Simple file exchange protocol
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct DisplayRequest;
 

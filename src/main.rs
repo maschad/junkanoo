@@ -12,6 +12,7 @@ use crossterm::{
 };
 use libp2p::{multiaddr::Protocol, Multiaddr};
 use ratatui::{prelude::CrosstermBackend, Terminal};
+use tokio::task::spawn;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
@@ -24,11 +25,12 @@ fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::builder()
-                .with_default_directive(LevelFilter::INFO.into())
+                .with_default_directive(LevelFilter::ERROR.into())
                 .from_env()
                 .unwrap(),
         )
         .init();
+
     let matches = cli::commands::get_args().get_matches();
 
     // Initialize app
@@ -56,28 +58,25 @@ fn main() {
                         target_peer_addr = Some(peer_addr);
                     }
                     Err(e) => {
-                        eprintln!("Invalid peer ID format: {}", e);
+                        tracing::error!("Invalid peer ID format: {}", e);
                         std::process::exit(1);
                     }
                 }
             } else {
-                eprintln!("Peer ID is required for download command");
+                tracing::error!("Peer ID is required for download command");
                 std::process::exit(1);
             }
         }
 
-        _ => println!("Unknown subcommand"),
+        _ => tracing::error!("Unknown subcommand"),
     }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    let mut app_network = app.clone();
 
-    rt.spawn(async move {
-        if let Err(e) = start_network(&mut app_network, target_peer_addr).await {
-            tracing::error!("Network error: {}", e);
-            std::process::exit(1);
-        }
-    });
+    if let Err(e) = rt.block_on(start_network(&mut app, target_peer_addr)) {
+        tracing::error!("Network error: {}", e);
+        std::process::exit(1);
+    }
 
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, &mut app);
@@ -154,26 +153,38 @@ async fn start_network(
 ) -> Result<(), &'static str> {
     let (mut client, event_stream, event_loop, peer_id) = service::node::new().await.unwrap();
 
+    // Spawn the network task for it to run in the background.
+    spawn(event_loop.run());
+
     client
         .start_listening("/ip4/0.0.0.0/tcp/0".parse().unwrap())
         .await
         .expect("Listening not to fail.");
 
-    let listening_addrs = client.get_listening_addrs().await.unwrap();
+    client
+        .start_listening("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap())
+        .await
+        .expect("Listening not to fail.");
+
+    let listening_addrs: Vec<Multiaddr> = client.get_listening_addrs().await.unwrap();
+
+    tracing::debug!("listening addrs: {:?}", listening_addrs);
 
     app.peer_id = peer_id;
     app.listening_addrs = listening_addrs;
 
-    let Some(Protocol::P2p(target_peer_id)) = target_peer_addr.as_ref().unwrap().iter().last()
-    else {
-        return Err("Expect peer multiaddr to contain peer ID.");
-    };
-
     if !app.is_host {
-        client
-            .dial(target_peer_id, target_peer_addr.unwrap())
-            .await
-            .unwrap();
+        let target_peer_addr = target_peer_addr.ok_or("No peer address provided")?;
+
+        let target_peer_id = target_peer_addr
+            .iter()
+            .find_map(|p| match p {
+                Protocol::P2p(peer_id) => Some(peer_id),
+                _ => None,
+            })
+            .ok_or("Peer address must contain a peer ID component (/p2p/...)")?;
+
+        client.dial(target_peer_id, target_peer_addr).await.unwrap();
 
         let display_response = client.request_directory(target_peer_id).await.unwrap();
         app.directory_items = display_response.items;
