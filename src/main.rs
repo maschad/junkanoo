@@ -86,31 +86,31 @@ fn main() {
             std::process::exit(1);
         }
 
-        let mut terminal = setup_terminal();
+        // let mut terminal = setup_terminal();
 
-        // Create a channel for UI updates
-        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-        app.lock().set_refresh_sender(tx);
+        // // Create a channel for UI updates
+        // let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        // app.lock().set_refresh_sender(tx);
 
-        // Spawn UI refresh task
-        let app_ui = app.clone();
-        tokio::spawn(async move {
-            while let Some(_) = rx.recv().await {
-                let app = app_ui.lock();
-                if let Some(tx) = app.refresh_sender() {
-                    let _ = tx.try_send(());
-                }
-            }
-        });
+        // // Spawn UI refresh task
+        // let app_ui = app.clone();
+        // tokio::spawn(async move {
+        //     while let Some(_) = rx.recv().await {
+        //         let app = app_ui.lock();
+        //         if let Some(tx) = app.refresh_sender() {
+        //             let _ = tx.try_send(());
+        //         }
+        //     }
+        // });
 
-        // Run UI loop in a blocking task
-        tokio::task::spawn_blocking(move || {
-            render_loop(&mut terminal, app);
-        })
-        .await
-        .unwrap();
+        // // Run UI loop in a blocking task
+        // tokio::task::spawn_blocking(move || {
+        //     render_loop(&mut terminal, app);
+        // })
+        // .await
+        // .unwrap();
 
-        cleanup_terminal();
+        // cleanup_terminal();
     });
 }
 
@@ -217,11 +217,17 @@ async fn start_network(
 
             client.dial(target_peer_id, target_peer_addr).await.unwrap();
 
+            app.connected = true;
+
             let display_response = client.request_directory(target_peer_id).await.unwrap();
             app.directory_items = display_response.items;
         }
     }
-    Ok(())
+
+    // Keep the network running indefinitely
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
 }
 
 async fn handle_network_events(
@@ -239,6 +245,14 @@ async fn handle_network_events(
                     if let Some(tx) = app.refresh_sender() {
                         let _ = tx.try_send(());
                     }
+                }
+            }
+            NetworkEvent::PeerConnected() => {
+                let mut app = app.lock();
+                app.connected = true;
+                // Notify the UI to refresh
+                if let Some(tx) = app.refresh_sender() {
+                    let _ = tx.try_send(());
                 }
             }
             _ => {}

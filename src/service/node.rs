@@ -7,9 +7,10 @@ use libp2p::{
     identity::Keypair,
     kad,
     multiaddr::{Multiaddr, Protocol},
+    noise,
     request_response::{self, OutboundRequestId, ProtocolSupport, ResponseChannel},
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
-    PeerId, StreamProtocol, SwarmBuilder,
+    tcp, yamux, PeerId, StreamProtocol, SwarmBuilder,
 };
 use libp2p_stream as stream;
 use rand::RngCore;
@@ -41,11 +42,17 @@ const JUNKANOO_PROTOCOL: StreamProtocol = StreamProtocol::new("/junkanoo");
 pub(crate) async fn new(
 ) -> Result<(Client, impl Stream<Item = Event>, EventLoop, PeerId), Box<dyn Error>> {
     // Create a public/private key pair, either random or based on a seed.
-    let id_keys = Keypair::generate_ed25519();
-    let peer_id = id_keys.public().to_peer_id();
+    // let id_keys = Keypair::generate_ed25519();
+    // let peer_id = id_keys.public().to_peer_id();
+    let peer_id = PeerId::random();
 
-    let mut swarm = SwarmBuilder::with_existing_identity(id_keys)
+    let mut swarm = SwarmBuilder::with_new_identity()
         .with_tokio()
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
         .with_quic()
         .with_behaviour(|key| Behaviour {
             kademlia: kad::Behaviour::new(
@@ -67,15 +74,15 @@ pub(crate) async fn new(
         .kademlia
         .set_mode(Some(kad::Mode::Server));
 
-    // Then add the bootnodes
-    for peer in &BOOTNODES {
-        if let Ok(peer_id) = peer.parse() {
-            swarm
-                .behaviour_mut()
-                .kademlia
-                .add_address(&peer_id, "/dnsaddr/bootstrap.libp2p.io".parse()?);
-        }
-    }
+    // // Then add the bootnodes
+    // for peer in &BOOTNODES {
+    //     if let Ok(peer_id) = peer.parse() {
+    //         swarm
+    //             .behaviour_mut()
+    //             .kademlia
+    //             .add_address(&peer_id, "/dnsaddr/bootstrap.libp2p.io".parse()?);
+    //     }
+    // }
 
     let (command_sender, command_receiver) = mpsc::channel(0);
     let (event_sender, event_receiver) = mpsc::channel(0);
@@ -296,16 +303,30 @@ impl EventLoop {
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
                 request_response::Event::ResponseSent { .. },
             )) => {}
+            SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
+                request_response::Event::InboundFailure {
+                    peer,
+                    request_id,
+                    error,
+                },
+            )) => {
+                tracing::debug!("Inbound failure: {peer} {request_id} {error}");
+            }
             SwarmEvent::IncomingConnection { .. } => {}
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
+                tracing::debug!("Connected to {peer_id}");
+
                 if endpoint.is_dialer() {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
                         let _ = sender.send(Ok(()));
                     }
                 }
-                tracing::debug!("Connected to {peer_id}");
+                self.event_sender
+                    .send(Event::PeerConnected())
+                    .await
+                    .expect("Event receiver not to be dropped.");
             }
             SwarmEvent::ConnectionClosed { .. } => {}
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
@@ -342,7 +363,7 @@ impl EventLoop {
                         .behaviour_mut()
                         .kademlia
                         .add_address(&peer_id, peer_addr.clone());
-                    match self.swarm.dial(peer_addr.with(Protocol::P2p(peer_id))) {
+                    match self.swarm.dial(peer_addr) {
                         Ok(()) => {
                             e.insert(sender);
                         }
@@ -446,10 +467,11 @@ pub(crate) enum Event {
         channel: ResponseChannel<DisplayResponse>,
     },
     NewListenAddr(Multiaddr),
+    PeerConnected(),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct DisplayRequest;
+pub(crate) struct DisplayRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum FileResponse {

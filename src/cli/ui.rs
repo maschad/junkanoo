@@ -181,8 +181,14 @@ fn render_connect_info(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         app.listening_addrs
             .iter()
-            .filter(|addr: &&libp2p::Multiaddr| !addr.to_string().contains("127.0.0"))
-            .map(|addr| format!("{}/p2p/{}", addr, app.peer_id))
+            // .filter(|addr: &&libp2p::Multiaddr| !addr.to_string().contains("127.0.0"))
+            .map(|addr| {
+                if addr.to_string().contains("/p2p/") {
+                    addr.to_string()
+                } else {
+                    format!("{}/p2p/{}", addr, app.peer_id)
+                }
+            })
             .collect::<Vec<_>>()
             .join(" or ")
     };
