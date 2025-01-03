@@ -1,18 +1,21 @@
-use std::io::Stdout;
+use std::{io::Stdout, sync::Arc};
 
 use app::App;
 use cli::ui;
 use crossterm::{
     event::{
-        poll, read, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind,
-        KeyModifiers,
+        poll, read, DisableMouseCapture, EnableMouseCapture, Event as CrosstermEvent, KeyCode,
+        KeyEventKind, KeyModifiers,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use futures::{Stream, StreamExt};
 use libp2p::{multiaddr::Protocol, Multiaddr};
+use parking_lot::Mutex;
 use ratatui::{prelude::CrosstermBackend, Terminal};
-use tokio::task::spawn;
+use service::node::Event as NetworkEvent;
+use tokio::spawn;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::EnvFilter;
 
@@ -72,15 +75,42 @@ fn main() {
     }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
+    let app = Arc::new(Mutex::new(app));
+    let app_network = app.clone();
 
-    if let Err(e) = rt.block_on(start_network(&mut app, target_peer_addr)) {
-        tracing::error!("Network error: {}", e);
-        std::process::exit(1);
-    }
+    // Enter the runtime context
+    rt.block_on(async {
+        if let Err(e) = start_network(app_network, target_peer_addr).await {
+            tracing::error!("Network error: {}", e);
+            std::process::exit(1);
+        }
 
-    let mut terminal = setup_terminal();
-    render_loop(&mut terminal, &mut app);
-    cleanup_terminal();
+        let mut terminal = setup_terminal();
+
+        // Create a channel for UI updates
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
+        app.lock().set_refresh_sender(tx);
+
+        // Spawn UI refresh task
+        let app_ui = app.clone();
+        tokio::spawn(async move {
+            while let Some(_) = rx.recv().await {
+                let app = app_ui.lock();
+                if let Some(tx) = app.refresh_sender() {
+                    let _ = tx.try_send(());
+                }
+            }
+        });
+
+        // Run UI loop in a blocking task
+        tokio::task::spawn_blocking(move || {
+            render_loop(&mut terminal, app);
+        })
+        .await
+        .unwrap();
+
+        cleanup_terminal();
+    });
 }
 
 fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
@@ -103,16 +133,16 @@ fn cleanup_terminal() {
         .expect("Failed to restore terminal");
 }
 
-fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App) {
-    // Render loop
+fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex<App>>) {
     loop {
         terminal
-            .draw(|frame| ui::render(frame, &app))
+            .draw(|frame| ui::render(frame, &app.lock()))
             .expect("Failed to draw");
 
         if poll(std::time::Duration::from_millis(16)).expect("Failed to poll events") {
-            if let Event::Key(key) = read().expect("Failed to read event") {
+            if let CrosstermEvent::Key(key) = read().expect("Failed to read event") {
                 if key.kind == KeyEventKind::Press {
+                    let mut app = app.lock();
                     match key.code {
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break
@@ -148,21 +178,20 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &mut App)
 }
 
 async fn start_network(
-    app: &mut App,
+    app: Arc<Mutex<App>>,
     target_peer_addr: Option<Multiaddr>,
 ) -> Result<(), &'static str> {
     let (mut client, event_stream, event_loop, peer_id) = service::node::new().await.unwrap();
 
-    // Spawn the network task for it to run in the background.
+    // Store the peer_id
+    app.lock().peer_id = peer_id;
+
+    // Spawn the network event handler
     spawn(event_loop.run());
+    spawn(handle_network_events(event_stream, app.clone()));
 
     client
-        .start_listening("/ip4/0.0.0.0/tcp/0".parse().unwrap())
-        .await
-        .expect("Listening not to fail.");
-
-    client
-        .start_listening("/ip4/127.0.0.1/udp/0/quic-v1".parse().unwrap())
+        .start_listening("/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap())
         .await
         .expect("Listening not to fail.");
 
@@ -170,24 +199,48 @@ async fn start_network(
 
     tracing::debug!("listening addrs: {:?}", listening_addrs);
 
-    app.peer_id = peer_id;
-    app.listening_addrs = listening_addrs;
+    {
+        let mut app = app.lock();
+        app.listening_addrs = listening_addrs;
 
-    if !app.is_host {
-        let target_peer_addr = target_peer_addr.ok_or("No peer address provided")?;
+        if !app.is_host {
+            let target_peer_addr = target_peer_addr.ok_or("No peer address provided")?;
 
-        let target_peer_id = target_peer_addr
-            .iter()
-            .find_map(|p| match p {
-                Protocol::P2p(peer_id) => Some(peer_id),
-                _ => None,
-            })
-            .ok_or("Peer address must contain a peer ID component (/p2p/...)")?;
+            let target_peer_id = target_peer_addr
+                .iter()
+                .find_map(|p| match p {
+                    Protocol::P2p(peer_id) => Some(peer_id),
+                    _ => None,
+                })
+                .ok_or("Peer address must contain a peer ID component (/p2p/...)")?;
 
-        client.dial(target_peer_id, target_peer_addr).await.unwrap();
+            client.dial(target_peer_id, target_peer_addr).await.unwrap();
 
-        let display_response = client.request_directory(target_peer_id).await.unwrap();
-        app.directory_items = display_response.items;
+            let display_response = client.request_directory(target_peer_id).await.unwrap();
+            app.directory_items = display_response.items;
+        }
     }
     Ok(())
+}
+
+async fn handle_network_events(
+    mut event_stream: impl Stream<Item = NetworkEvent> + Unpin,
+    app: Arc<Mutex<App>>,
+) {
+    while let Some(event) = event_stream.next().await {
+        match event {
+            NetworkEvent::NewListenAddr(addr) => {
+                tracing::debug!("New listen addr in main: {:?}", addr);
+                let mut app = app.lock();
+                if !app.listening_addrs.contains(&addr) {
+                    app.listening_addrs.push(addr);
+                    // Notify the UI to refresh
+                    if let Some(tx) = app.refresh_sender() {
+                        let _ = tx.try_send(());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 }

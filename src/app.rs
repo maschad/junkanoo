@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use tokio::sync::mpsc::Sender;
 
 #[derive(Clone)]
 pub struct App {
@@ -19,6 +20,7 @@ pub struct App {
     pub items_being_shared: HashSet<PathBuf>,
     pub items_to_download: HashSet<PathBuf>,
     pub items_being_downloaded: HashSet<PathBuf>,
+    refresh_sender: Option<Sender<()>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +57,7 @@ impl App {
             items_being_shared: HashSet::new(),
             items_to_download: HashSet::new(),
             items_being_downloaded: HashSet::new(),
+            refresh_sender: None,
         };
 
         if app.is_host && matches!(app.state, AppState::Share) {
@@ -259,5 +262,13 @@ impl App {
         self.items_being_downloaded = self.items_to_download.clone();
         self.state = AppState::Loading;
         // TODO: Request files from peer store for remote download
+    }
+
+    pub fn set_refresh_sender(&mut self, sender: Sender<()>) {
+        self.refresh_sender = Some(sender);
+    }
+
+    pub fn refresh_sender(&self) -> Option<&Sender<()>> {
+        self.refresh_sender.as_ref()
     }
 }

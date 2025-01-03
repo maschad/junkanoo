@@ -162,6 +162,7 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             app.listening_addrs
                 .iter()
+                .filter(|addr| !addr.to_string().contains("127.0.0"))
                 .map(|addr| format!("{}/p2p/{}", addr, app.peer_id))
                 .collect::<Vec<_>>()
                 .join(" or ")

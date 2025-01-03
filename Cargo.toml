@@ -33,9 +33,6 @@ libp2p = { version = "0.54.1", features = [
 	"macros",
 	"request-response",
 	"quic",
-	"tcp",
-	"yamux",
-	"noise",
 ] }
 parking_lot = "0.12.3"
 rclite = "0.2.4"

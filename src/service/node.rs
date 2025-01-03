@@ -7,10 +7,9 @@ use libp2p::{
     identity::Keypair,
     kad,
     multiaddr::{Multiaddr, Protocol},
-    noise,
     request_response::{self, OutboundRequestId, ProtocolSupport, ResponseChannel},
     swarm::{NetworkBehaviour, Swarm, SwarmEvent},
-    tcp, yamux, PeerId, StreamProtocol, SwarmBuilder,
+    PeerId, StreamProtocol, SwarmBuilder,
 };
 use libp2p_stream as stream;
 use rand::RngCore;
@@ -47,11 +46,6 @@ pub(crate) async fn new(
 
     let mut swarm = SwarmBuilder::with_existing_identity(id_keys)
         .with_tokio()
-        .with_tcp(
-            tcp::Config::default(),
-            noise::Config::new,
-            yamux::Config::default,
-        )?
         .with_quic()
         .with_behaviour(|key| Behaviour {
             kademlia: kad::Behaviour::new(
@@ -257,10 +251,13 @@ impl EventLoop {
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local_peer_id = *self.swarm.local_peer_id();
-                tracing::debug!(
-                    "Local node is listening on {:?}",
-                    address.with(Protocol::P2p(local_peer_id))
-                );
+                let addr_with_peer = address.with(Protocol::P2p(local_peer_id));
+                tracing::debug!("Local node is listening on {:?}", addr_with_peer);
+
+                self.event_sender
+                    .send(Event::NewListenAddr(addr_with_peer))
+                    .await
+                    .expect("Event receiver not to be dropped.");
             }
             SwarmEvent::Behaviour(BehaviourEvent::Kademlia(_)) => {}
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
@@ -448,6 +445,7 @@ pub(crate) enum Event {
         request: DisplayRequest,
         channel: ResponseChannel<DisplayResponse>,
     },
+    NewListenAddr(Multiaddr),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
