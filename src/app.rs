@@ -1,8 +1,10 @@
 use libp2p::{Multiaddr, PeerId};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 
+#[derive(Clone)]
 pub struct App {
     pub directory_items: Vec<DirectoryItem>,
     pub directory_cache: HashMap<PathBuf, Vec<DirectoryItem>>,
@@ -19,7 +21,7 @@ pub struct App {
     pub items_being_downloaded: HashSet<PathBuf>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryItem {
     pub name: String,
     pub path: PathBuf,
@@ -29,6 +31,7 @@ pub struct DirectoryItem {
     pub selected: bool,
 }
 
+#[derive(Clone)]
 pub enum AppState {
     Share,
     Download,
@@ -247,7 +250,6 @@ impl App {
         }
         self.items_being_shared = self.items_to_share.clone();
         self.state = AppState::Loading;
-        // TODO: Store files in peer store for remote download
     }
 
     pub fn start_download(&mut self) {

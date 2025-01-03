@@ -70,10 +70,14 @@ fn main() {
     }
 
     let rt = tokio::runtime::Runtime::new().unwrap();
-    if let Err(e) = rt.block_on(start_network(&mut app, target_peer_addr)) {
-        tracing::error!("Network error: {}", e);
-        std::process::exit(1);
-    }
+    let mut app_network = app.clone();
+
+    rt.spawn(async move {
+        if let Err(e) = start_network(&mut app_network, target_peer_addr).await {
+            tracing::error!("Network error: {}", e);
+            std::process::exit(1);
+        }
+    });
 
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, &mut app);
@@ -170,6 +174,9 @@ async fn start_network(
             .dial(target_peer_id, target_peer_addr.unwrap())
             .await
             .unwrap();
+
+        let display_response = client.request_directory(target_peer_id).await.unwrap();
+        app.directory_items = display_response.items;
     }
     Ok(())
 }

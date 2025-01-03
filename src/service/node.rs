@@ -20,6 +20,8 @@ use std::{
     time::Duration,
 };
 
+use crate::app::DirectoryItem;
+
 const BOOTNODES: [&str; 4] = [
     "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
     "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
@@ -117,7 +119,7 @@ impl Client {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    async fn send(&self, mut stream: libp2p::Stream) -> io::Result<()> {
+    async fn send_files(&self, mut stream: libp2p::Stream) -> io::Result<()> {
         let num_bytes = rand::random::<usize>() % 1000;
         let mut bytes = vec![0; num_bytes];
         rand::thread_rng().fill_bytes(&mut bytes);
@@ -149,6 +151,19 @@ impl Client {
                 peer_addr,
                 sender,
             })
+            .await
+            .expect("Command receiver not to be dropped.");
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    /// Request the directory items from the given peer.
+    pub(crate) async fn request_directory(
+        &mut self,
+        peer_id: PeerId,
+    ) -> Result<DisplayResponse, Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::RequestDisplay { peer_id, sender })
             .await
             .expect("Command receiver not to be dropped.");
         receiver.await.expect("Sender not to be dropped.")
@@ -196,7 +211,7 @@ pub(crate) struct EventLoop {
     pending_request_file:
         HashMap<OutboundRequestId, oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send>>>>,
     pending_request_display:
-        HashMap<OutboundRequestId, oneshot::Sender<Result<Vec<String>, Box<dyn Error + Send>>>>,
+        HashMap<OutboundRequestId, oneshot::Sender<Result<DisplayResponse, Box<dyn Error + Send>>>>,
 }
 
 impl EventLoop {
@@ -375,7 +390,7 @@ enum Command {
     },
     RequestDisplay {
         peer_id: PeerId,
-        sender: oneshot::Sender<Result<Vec<String>, Box<dyn Error + Send>>>,
+        sender: oneshot::Sender<Result<DisplayResponse, Box<dyn Error + Send>>>,
     },
     RespondDisplay {
         display_response: DisplayResponse,
@@ -400,10 +415,7 @@ enum FileResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DisplayResponse {
-    pub path: String,
-    pub is_dir: bool,
-    pub size: u64,
-    pub preview_content: String,
+    pub items: Vec<DirectoryItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
