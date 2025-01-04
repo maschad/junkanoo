@@ -209,6 +209,24 @@ impl Client {
             .await
             .expect("Command receiver not to be dropped.");
     }
+
+    /// Send the current directory items to the given peer.
+    pub(crate) async fn insert_directory_items(
+        &mut self,
+        peer_id: PeerId,
+        directory_items: Vec<DirectoryItem>,
+    ) -> Result<(), Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::InsertDirectoryItems {
+                peer_id,
+                directory_items,
+                sender,
+            })
+            .await
+            .expect("Command receiver not to be dropped.");
+        receiver.await.expect("Sender not to be dropped.")
+    }
 }
 
 pub(crate) struct EventLoop {
@@ -220,6 +238,7 @@ pub(crate) struct EventLoop {
         HashMap<OutboundRequestId, oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send>>>>,
     pending_request_display:
         HashMap<OutboundRequestId, oneshot::Sender<Result<DisplayResponse, Box<dyn Error + Send>>>>,
+    pending_directory_items: HashMap<PeerId, Vec<DirectoryItem>>,
 }
 
 impl EventLoop {
@@ -235,6 +254,7 @@ impl EventLoop {
             pending_dial: Default::default(),
             pending_request_file: Default::default(),
             pending_request_display: Default::default(),
+            pending_directory_items: Default::default(),
         }
     }
 
@@ -273,6 +293,7 @@ impl EventLoop {
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
+                    // Forward the request to the application layer
                     self.event_sender
                         .send(Event::InboundRequest { request, channel })
                         .await
@@ -394,6 +415,15 @@ impl EventLoop {
             Command::GetListeningAddrs { sender } => {
                 let _ = sender.send(Ok(self.swarm.listeners().cloned().collect()));
             }
+            Command::InsertDirectoryItems {
+                peer_id,
+                directory_items,
+                sender,
+            } => {
+                self.pending_directory_items
+                    .insert(peer_id, directory_items);
+                let _ = sender.send(Ok(()));
+            }
             Command::RequestDisplay { peer_id, sender } => {
                 let request_id = self
                     .swarm
@@ -402,15 +432,18 @@ impl EventLoop {
                     .send_request(&peer_id, DisplayRequest);
                 self.pending_request_display.insert(request_id, sender);
             }
-            Command::RespondDisplay {
-                display_response,
-                channel,
-            } => {
+            Command::RespondDisplay { channel } => {
+                let response = DisplayResponse {
+                    items: self
+                        .pending_directory_items
+                        .remove(&self.swarm.local_peer_id())
+                        .unwrap_or_default(),
+                };
                 self.swarm
                     .behaviour_mut()
                     .request_response
-                    .send_response(channel, display_response)
-                    .expect("Connection to peer to be still open.");
+                    .send_response(channel, response)
+                    .expect("Response channel to be valid");
             }
         }
     }
@@ -438,6 +471,11 @@ enum Command {
         peer_id: PeerId,
         sender: oneshot::Sender<()>,
     },
+    InsertDirectoryItems {
+        peer_id: PeerId,
+        directory_items: Vec<DirectoryItem>,
+        sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
+    },
     RequestFiles {
         peer_id: PeerId,
         file_names: Vec<String>,
@@ -455,7 +493,6 @@ enum Command {
         sender: oneshot::Sender<Result<DisplayResponse, Box<dyn Error + Send>>>,
     },
     RespondDisplay {
-        display_response: DisplayResponse,
         channel: ResponseChannel<DisplayResponse>,
     },
 }
@@ -481,6 +518,7 @@ enum FileResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct DisplayResponse {
+    #[serde(default)]
     pub items: Vec<DirectoryItem>,
 }
 

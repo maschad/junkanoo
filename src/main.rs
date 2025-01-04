@@ -219,15 +219,30 @@ async fn start_network(
 
             app.connected = true;
 
-            let display_response = client.request_directory(target_peer_id).await.unwrap();
-            app.directory_items = display_response.items;
+            // Add delay to allow connection to establish
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+            // Add error handling for directory request
+            match client.request_directory(target_peer_id).await {
+                Ok(display_response) => {
+                    tracing::debug!("Received directory response: {:?}", display_response);
+                    app.directory_items = display_response.items;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to request directory: {}", e);
+                    return Err("Failed to request directory");
+                }
+            }
+        } else {
+        }
+
+        // Keep the network running indefinitely
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
     }
 
-    // Keep the network running indefinitely
-    loop {
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-    }
+    // Ok(())
 }
 
 async fn handle_network_events(
