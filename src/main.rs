@@ -23,7 +23,8 @@ mod app;
 mod cli;
 mod service;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     // Initialize logging
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -75,43 +76,19 @@ fn main() {
         _ => tracing::error!("Unknown subcommand"),
     }
 
-    let rt = tokio::runtime::Runtime::new().unwrap();
     let app = Arc::new(Mutex::new(app));
     let app_network = app.clone();
+    let app_ui = app.clone();
 
-    // Enter the runtime context
-    rt.block_on(async {
-        if let Err(e) = start_network(app_network, target_peer_addr).await {
-            tracing::error!("Network error: {}", e);
-            std::process::exit(1);
-        }
+    // Spawn network task
+    if let Err(e) = start_network(app_network, target_peer_addr).await {
+        tracing::error!("Network error: {}", e);
+        std::process::exit(1);
+    }
 
-        // let mut terminal = setup_terminal();
-
-        // // Create a channel for UI updates
-        // let (tx, mut rx) = tokio::sync::mpsc::channel(32);
-        // app.lock().set_refresh_sender(tx);
-
-        // // Spawn UI refresh task
-        // let app_ui = app.clone();
-        // tokio::spawn(async move {
-        //     while let Some(_) = rx.recv().await {
-        //         let app = app_ui.lock();
-        //         if let Some(tx) = app.refresh_sender() {
-        //             let _ = tx.try_send(());
-        //         }
-        //     }
-        // });
-
-        // // Run UI loop in a blocking task
-        // tokio::task::spawn_blocking(move || {
-        //     render_loop(&mut terminal, app);
-        // })
-        // .await
-        // .unwrap();
-
-        // cleanup_terminal();
-    });
+    let mut terminal = setup_terminal();
+    render_loop(&mut terminal, app_ui);
+    cleanup_terminal();
 }
 
 fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
@@ -233,16 +210,14 @@ async fn start_network(
                     return Err("Failed to request directory");
                 }
             }
-        } else {
         }
-
         // Keep the network running indefinitely
-        loop {
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        }
+        // loop {
+        //     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        // }
     }
 
-    // Ok(())
+    Ok(())
 }
 
 async fn handle_network_events(
