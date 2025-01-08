@@ -295,21 +295,28 @@ impl EventLoop {
                 request_response::Message::Request {
                     request, channel, ..
                 } => {
-                    // Forward the request to the application layer
-                    self.event_sender
-                        .send(Event::InboundRequest { request, channel })
-                        .await
-                        .expect("Event receiver not to be dropped.");
+                    // When receiving a directory request, respond with items from pending_directory_items
+                    let items = self
+                        .pending_directory_items
+                        .get(self.swarm.local_peer_id())
+                        .cloned()
+                        .unwrap_or_default();
+
+                    let response = DisplayResponse { items };
+
+                    self.swarm
+                        .behaviour_mut()
+                        .request_response
+                        .send_response(channel, response)
+                        .expect("Response channel to be valid");
                 }
                 request_response::Message::Response {
                     request_id,
                     response,
                 } => {
-                    let _ = self
-                        .pending_request_display
-                        .remove(&request_id)
-                        .expect("Request to still be pending.")
-                        .send(Ok(response));
+                    if let Some(sender) = self.pending_request_display.remove(&request_id) {
+                        let _ = sender.send(Ok(response));
+                    }
                 }
             },
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(

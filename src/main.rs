@@ -233,6 +233,17 @@ async fn start_network(
                 return Err("Failed to request directory");
             }
         }
+    } else {
+        // Release the lock before the async call
+        let directory_items = {
+            let app = app.lock();
+            app.directory_items.clone()
+        };
+
+        client
+            .insert_directory_items(peer_id, directory_items)
+            .await
+            .unwrap();
     }
 
     // Keep the network running with minimal lock contention
