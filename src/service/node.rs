@@ -87,13 +87,15 @@ pub(crate) async fn new(
     let (command_sender, command_receiver) = mpsc::channel(0);
     let (event_sender, event_receiver) = mpsc::channel(0);
 
+    let local_peer_id = *swarm.local_peer_id();
+
     Ok((
         Client {
             sender: command_sender,
         },
         event_receiver,
         EventLoop::new(swarm, command_receiver, event_sender),
-        peer_id,
+        local_peer_id,
     ))
 }
 

@@ -176,27 +176,26 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_connect_info(frame: &mut Frame, app: &App, area: Rect) {
-    let addrs = if app.listening_addrs.is_empty() {
-        "No listening addresses available".to_string()
+    let items: Vec<ListItem> = if app.listening_addrs.is_empty() {
+        vec![ListItem::new("No listening addresses available")]
     } else {
         app.listening_addrs
             .iter()
             // .filter(|addr: &&libp2p::Multiaddr| !addr.to_string().contains("127.0.0"))
             .map(|addr| {
-                if addr.to_string().contains("/p2p/") {
+                let addr_str = if addr.to_string().contains("/p2p/") {
                     addr.to_string()
                 } else {
                     format!("{}/p2p/{}", addr, app.peer_id)
-                }
+                };
+                ListItem::new(addr_str)
             })
-            .collect::<Vec<_>>()
-            .join(" or ")
+            .collect()
     };
 
-    let connect_text = format!("Addresses: {}", addrs);
-    let connect_widget = Paragraph::new(connect_text)
+    let connect_widget = List::new(items)
         .style(Style::default().fg(Color::Yellow))
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default().title(" Addresses ").borders(Borders::ALL));
 
     frame.render_widget(connect_widget, area);
 }

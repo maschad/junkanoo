@@ -17,6 +17,7 @@ use ratatui::{prelude::CrosstermBackend, Terminal};
 use service::node::Event as NetworkEvent;
 use tokio::spawn;
 use tracing::level_filters::LevelFilter;
+use tracing_appender::rolling;
 use tracing_subscriber::EnvFilter;
 
 mod app;
@@ -25,15 +26,8 @@ mod service;
 
 #[tokio::main]
 async fn main() {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::ERROR.into())
-                .from_env()
-                .unwrap(),
-        )
-        .init();
+    // Setup logger
+    setup_logger();
 
     let matches = cli::commands::get_args().get_matches();
 
@@ -81,14 +75,33 @@ async fn main() {
     let app_ui = app.clone();
 
     // Spawn network task
-    if let Err(e) = start_network(app_network, target_peer_addr).await {
-        tracing::error!("Network error: {}", e);
-        std::process::exit(1);
-    }
+    tokio::spawn(async move {
+        if let Err(e) = start_network(app_network, target_peer_addr).await {
+            tracing::error!("Network error: {}", e);
+            std::process::exit(1);
+        }
+    });
 
+    // Run UI in main thread - uncomment these lines
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, app_ui);
     cleanup_terminal();
+}
+
+fn setup_logger() {
+    // Initialize logging to file and terminal
+    let file_appender = rolling::minutely("logs", "p2p-file-share");
+
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr) // Write to terminal
+        .with_writer(file_appender) // Also write to file
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env()
+                .unwrap(),
+        )
+        .init();
 }
 
 fn setup_terminal() -> Terminal<CrosstermBackend<Stdout>> {
@@ -161,8 +174,11 @@ async fn start_network(
 ) -> Result<(), &'static str> {
     let (mut client, event_stream, event_loop, peer_id) = service::node::new().await.unwrap();
 
-    // Store the peer_id
-    app.lock().peer_id = peer_id;
+    // Scope the lock to just this operation
+    {
+        let mut app = app.lock();
+        app.peer_id = peer_id;
+    }
 
     // Spawn the network event handler
     spawn(event_loop.run());
@@ -174,50 +190,55 @@ async fn start_network(
         .expect("Listening not to fail.");
 
     let listening_addrs: Vec<Multiaddr> = client.get_listening_addrs().await.unwrap();
-
     tracing::debug!("listening addrs: {:?}", listening_addrs);
 
+    // Update listening addresses in a separate lock scope
     {
         let mut app = app.lock();
         app.listening_addrs = listening_addrs;
-
-        if !app.is_host {
-            let target_peer_addr = target_peer_addr.ok_or("No peer address provided")?;
-
-            let target_peer_id = target_peer_addr
-                .iter()
-                .find_map(|p| match p {
-                    Protocol::P2p(peer_id) => Some(peer_id),
-                    _ => None,
-                })
-                .ok_or("Peer address must contain a peer ID component (/p2p/...)")?;
-
-            client.dial(target_peer_id, target_peer_addr).await.unwrap();
-
-            app.connected = true;
-
-            // Add delay to allow connection to establish
-            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-            // Add error handling for directory request
-            match client.request_directory(target_peer_id).await {
-                Ok(display_response) => {
-                    tracing::debug!("Received directory response: {:?}", display_response);
-                    app.directory_items = display_response.items;
-                }
-                Err(e) => {
-                    tracing::error!("Failed to request directory: {}", e);
-                    return Err("Failed to request directory");
-                }
-            }
-        }
-        // Keep the network running indefinitely
-        // loop {
-        //     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-        // }
     }
 
-    Ok(())
+    // Handle non-host case
+    if !app.lock().is_host {
+        let target_peer_addr = target_peer_addr.ok_or("No peer address provided")?;
+
+        let target_peer_id = target_peer_addr
+            .iter()
+            .find_map(|p| match p {
+                Protocol::P2p(peer_id) => Some(peer_id),
+                _ => None,
+            })
+            .ok_or("Peer address must contain a peer ID component (/p2p/...)")?;
+
+        client.dial(target_peer_id, target_peer_addr).await.unwrap();
+
+        // Update connected status
+        {
+            let mut app = app.lock();
+            app.connected = true;
+        }
+
+        // Add delay to allow connection to establish
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+        // Request directory
+        match client.request_directory(target_peer_id).await {
+            Ok(display_response) => {
+                tracing::debug!("Received directory response: {:?}", display_response);
+                let mut app = app.lock();
+                app.directory_items = display_response.items;
+            }
+            Err(e) => {
+                tracing::error!("Failed to request directory: {}", e);
+                return Err("Failed to request directory");
+            }
+        }
+    }
+
+    // Keep the network running with minimal lock contention
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    }
 }
 
 async fn handle_network_events(
