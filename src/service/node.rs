@@ -23,6 +23,9 @@ use std::{
 
 use crate::app::DirectoryItem;
 
+// 10 minutes
+const CONNECTION_TIMEOUT: u64 = 600;
+
 // Amino Bootnode https://docs.ipfs.tech/concepts/public-utilities/#amino-dht-bootstrappers
 const BOOTNODES: [&str; 5] = [
     "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -67,7 +70,9 @@ pub(crate) async fn new(
             ),
             file_stream: stream::Behaviour::new(),
         })?
-        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(10)))
+        .with_swarm_config(|c| {
+            c.with_idle_connection_timeout(Duration::from_secs(CONNECTION_TIMEOUT))
+        })
         .build();
 
     // Set Kademlia into server mode before adding bootnodes

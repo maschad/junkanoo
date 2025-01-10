@@ -53,7 +53,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Right panel with preview
     let preview_block = Block::default().title(" Preview ").borders(Borders::ALL);
 
-    let preview_content = if let Some(index) = app.selected_index {
+    let preview_content = if let Some(index) = app.selected_index.or(Some(0)) {
         if let Some(item) = app.directory_items.get(index) {
             if !item.is_dir {
                 match std::fs::read_to_string(&item.path) {
@@ -148,7 +148,7 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
             };
             let prefix = if item.is_dir { "📁 " } else { "📄 " };
 
-            let style = if Some(item.index) == app.selected_index {
+            let style = if Some(item.index) == app.selected_index.or(Some(0)) {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
