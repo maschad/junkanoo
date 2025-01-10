@@ -1,6 +1,7 @@
 use std::{io::Stdout, sync::Arc};
 
-use app::App;
+use app::{App, DirectoryItem};
+use arboard::Clipboard;
 use cli::ui;
 use crossterm::{
     event::{
@@ -138,6 +139,15 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                             break
                         }
+                        KeyCode::Char('x') => {
+                            let mut clipboard = Clipboard::new().unwrap();
+                            if let Some(addr) = app.listening_addrs.first() {
+                                let full_addr = format!("{}/p2p/{}", addr, app.peer_id);
+                                if let Err(e) = clipboard.set_text(full_addr) {
+                                    tracing::error!("Failed to copy address to clipboard: {}", e);
+                                }
+                            }
+                        }
                         KeyCode::Char('q') => {
                             app.disconnect();
                         }
@@ -234,16 +244,32 @@ async fn start_network(
             }
         }
     } else {
-        // Release the lock before the async call
-        let directory_items = {
-            let app = app.lock();
-            app.directory_items.clone()
-        };
+        // Watch for changes to items_to_share and update peer
+        loop {
+            let directory_items = {
+                let app = app.lock();
+                app.items_to_share
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| DirectoryItem {
+                        name: path.file_name().unwrap().to_string_lossy().to_string(),
+                        path: path.clone(),
+                        is_dir: path.is_dir(),
+                        index,
+                        depth: 0,
+                        selected: true,
+                    })
+                    .collect()
+            };
 
-        client
-            .insert_directory_items(peer_id, directory_items)
-            .await
-            .unwrap();
+            client
+                .insert_directory_items(peer_id, directory_items)
+                .await
+                .unwrap();
+
+            // Sleep briefly to avoid tight loop
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
     }
 
     // Keep the network running with minimal lock contention
@@ -272,6 +298,14 @@ async fn handle_network_events(
             NetworkEvent::PeerConnected() => {
                 let mut app = app.lock();
                 app.connected = true;
+                // Notify the UI to refresh
+                if let Some(tx) = app.refresh_sender() {
+                    let _ = tx.try_send(());
+                }
+            }
+            NetworkEvent::PeerDisconnected() => {
+                let mut app = app.lock();
+                app.connected = false;
                 // Notify the UI to refresh
                 if let Some(tx) = app.refresh_sender() {
                     let _ = tx.try_send(());

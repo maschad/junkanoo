@@ -358,7 +358,18 @@ impl EventLoop {
                     .await
                     .expect("Event receiver not to be dropped.");
             }
-            SwarmEvent::ConnectionClosed { .. } => {}
+            SwarmEvent::ConnectionClosed {
+                peer_id,
+                connection_id,
+                num_established,
+                ..
+            } => {
+                tracing::debug!("Connection closed: {peer_id} {connection_id} {num_established}");
+                self.event_sender
+                    .send(Event::PeerDisconnected())
+                    .await
+                    .expect("Event receiver not to be dropped.");
+            }
             SwarmEvent::OutgoingConnectionError { peer_id, error, .. } => {
                 if let Some(peer_id) = peer_id {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
@@ -514,6 +525,7 @@ pub(crate) enum Event {
     },
     NewListenAddr(Multiaddr),
     PeerConnected(),
+    PeerDisconnected(),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

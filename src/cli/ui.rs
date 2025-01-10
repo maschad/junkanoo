@@ -188,14 +188,24 @@ fn render_connect_info(frame: &mut Frame, app: &App, area: Rect) {
                 } else {
                     format!("{}/p2p/{}", addr, app.peer_id)
                 };
-                ListItem::new(addr_str)
+                ListItem::new(Line::from(vec![
+                    Span::raw("📋 "), // Clipboard icon
+                    Span::styled(
+                        addr_str,
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                ]))
             })
             .collect()
     };
 
-    let connect_widget = List::new(items)
-        .style(Style::default().fg(Color::Yellow))
-        .block(Block::default().title(" Addresses ").borders(Borders::ALL));
+    let connect_widget = List::new(items).block(
+        Block::default()
+            .title(" Addresses (Press X to Copy the address) ")
+            .borders(Borders::ALL),
+    );
 
     frame.render_widget(connect_widget, area);
 }
