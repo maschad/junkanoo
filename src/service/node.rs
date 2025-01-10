@@ -23,11 +23,13 @@ use std::{
 
 use crate::app::DirectoryItem;
 
-const BOOTNODES: [&str; 4] = [
+// Amino Bootnode https://docs.ipfs.tech/concepts/public-utilities/#amino-dht-bootstrappers
+const BOOTNODES: [&str; 5] = [
     "QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
     "QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
     "QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
     "QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+    "12D3KooWKnDdG3iXw9eTFijk3EWSunZcFi54Zka4wmtqtt6rPxc",
 ];
 
 const JUNKANOO_PROTOCOL: StreamProtocol = StreamProtocol::new("/junkanoo");
