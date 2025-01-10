@@ -54,3 +54,4 @@ tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing-appender = "0.2.0"
 libp2p-stream = "0.2.0-alpha"
 arboard = "3.4.1"
+walkdir = "2.5.0"

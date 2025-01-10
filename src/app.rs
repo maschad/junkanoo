@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
+use walkdir;
 
 #[derive(Clone)]
 pub struct App {
@@ -169,11 +170,36 @@ impl App {
         if let Some(index) = self.selected_index {
             if let Some(item) = self.directory_items.get_mut(index) {
                 match self.state {
-                    AppState::Share => {
-                        self.items_to_share.insert(item.path.clone());
-                    }
-                    AppState::Download => {
-                        self.items_to_download.insert(item.path.clone());
+                    AppState::Share | AppState::Download => {
+                        let items_set = match self.state {
+                            AppState::Share => &mut self.items_to_share,
+                            AppState::Download => &mut self.items_to_download,
+                            _ => unreachable!(),
+                        };
+
+                        if item.is_dir {
+                            // Add the directory itself with its relative path
+                            if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
+                                items_set.insert(rel_path.to_path_buf());
+
+                                // Add all files and subdirectories with their relative paths
+                                for entry in walkdir::WalkDir::new(&item.path)
+                                    .into_iter()
+                                    .filter_map(|e| e.ok())
+                                {
+                                    if let Ok(entry_rel_path) =
+                                        entry.path().strip_prefix(&self.current_path)
+                                    {
+                                        items_set.insert(entry_rel_path.to_path_buf());
+                                    }
+                                }
+                            }
+                        } else {
+                            // For single files, store relative to current directory
+                            if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
+                                items_set.insert(rel_path.to_path_buf());
+                            }
+                        }
                     }
                     _ => {}
                 }

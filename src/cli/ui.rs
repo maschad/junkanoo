@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -59,7 +61,21 @@ pub fn render(frame: &mut Frame, app: &App) {
                     Err(_) => "Unable to read file contents".to_string(),
                 }
             } else {
-                format!("Directory: {}", item.name)
+                let selected_count = app
+                    .items_to_share
+                    .iter()
+                    .filter(|path| {
+                        path.starts_with(
+                            item.path
+                                .strip_prefix(&app.current_path)
+                                .unwrap_or(&PathBuf::new()),
+                        )
+                    })
+                    .count();
+                format!(
+                    "Directory: {} ({} items selected)",
+                    item.name, selected_count
+                )
             }
         } else {
             "No file selected".to_string()
@@ -106,8 +122,28 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
         .map(|item| {
             let indent = "  ".repeat(item.depth);
             let selected = match app.state {
-                AppState::Share if app.items_to_share.contains(&item.path) => "🔵 ",
-                AppState::Download if app.items_to_download.contains(&item.path) => "🔵 ",
+                AppState::Share => {
+                    if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
+                        if app.items_to_share.contains(&rel_path.to_path_buf()) {
+                            "🔵 "
+                        } else {
+                            "  "
+                        }
+                    } else {
+                        "  "
+                    }
+                }
+                AppState::Download => {
+                    if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
+                        if app.items_to_download.contains(&rel_path.to_path_buf()) {
+                            "🔵 "
+                        } else {
+                            "  "
+                        }
+                    } else {
+                        "  "
+                    }
+                }
                 _ => "  ",
             };
             let prefix = if item.is_dir { "📁 " } else { "📄 " };
@@ -117,9 +153,21 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else if matches!(app.state, AppState::Share)
-                && app.items_to_share.contains(&item.path)
+                && app.items_to_share.contains(
+                    &item
+                        .path
+                        .strip_prefix(&app.current_path)
+                        .unwrap_or(&PathBuf::new())
+                        .to_path_buf(),
+                )
                 || matches!(app.state, AppState::Download)
-                    && app.items_to_download.contains(&item.path)
+                    && app.items_to_download.contains(
+                        &item
+                            .path
+                            .strip_prefix(&app.current_path)
+                            .unwrap_or(&PathBuf::new())
+                            .to_path_buf(),
+                    )
             {
                 Style::default().fg(Color::Green)
             } else {
