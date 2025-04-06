@@ -110,6 +110,9 @@ fn render_title(frame: &mut Frame, area: Rect, is_host: bool) {
         Span::raw(" Unselect all | "),
         Span::styled("Backspace", Style::default().fg(Color::Yellow)),
         Span::raw(" Back"),
+        Span::raw(" | "),
+        Span::styled("D", Style::default().fg(Color::Yellow)),
+        Span::raw(" Begin Download | "),
     ]))
     .block(Block::default().borders(Borders::ALL));
     frame.render_widget(title, area);

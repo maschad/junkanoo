@@ -4,7 +4,6 @@ use futures::{
     prelude::*,
 };
 use libp2p::{
-    identity::Keypair,
     kad,
     multiaddr::{Multiaddr, Protocol},
     noise,
@@ -13,6 +12,7 @@ use libp2p::{
     tcp, yamux, PeerId, StreamProtocol, SwarmBuilder,
 };
 use libp2p_stream as stream;
+use once_cell::sync::Lazy;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -20,9 +20,11 @@ use std::{
     error::Error,
     time::Duration,
 };
+use tokio::{io::AsyncWriteExt, sync::Semaphore};
 
 use crate::app::DirectoryItem;
 
+use super::utils::FileTransfer;
 // 10 minutes
 const CONNECTION_TIMEOUT: u64 = 600;
 
@@ -35,7 +37,14 @@ const BOOTNODES: [&str; 5] = [
     "12D3KooWKnDdG3iXw9eTFijk3EWSunZcFi54Zka4wmtqtt6rPxc",
 ];
 
-const JUNKANOO_PROTOCOL: StreamProtocol = StreamProtocol::new("/junkanoo");
+const JUNKANOO_REQUEST_RESPONSE_PROTOCOL: StreamProtocol =
+    StreamProtocol::new("/junkanoo/request-response");
+
+const JUNKANOO_FILE_PROTOCOL: StreamProtocol = StreamProtocol::new("/junkanoo/stream");
+
+// Limit concurrent transfers to prevent resource exhaustion
+// This can be tuned based on system capabilities and requirements
+static TRANSFER_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(4));
 
 /// Creates the network components, namely:
 ///
@@ -65,7 +74,7 @@ pub(crate) async fn new(
                 kad::store::MemoryStore::new(key.public().to_peer_id()),
             ),
             request_response: request_response::cbor::Behaviour::new(
-                [(JUNKANOO_PROTOCOL, ProtocolSupport::Full)],
+                [(JUNKANOO_REQUEST_RESPONSE_PROTOCOL, ProtocolSupport::Full)],
                 request_response::Config::default(),
             ),
             file_stream: stream::Behaviour::new(),
@@ -81,15 +90,15 @@ pub(crate) async fn new(
         .kademlia
         .set_mode(Some(kad::Mode::Server));
 
-    // // Then add the bootnodes
-    // for peer in &BOOTNODES {
-    //     if let Ok(peer_id) = peer.parse() {
-    //         swarm
-    //             .behaviour_mut()
-    //             .kademlia
-    //             .add_address(&peer_id, "/dnsaddr/bootstrap.libp2p.io".parse()?);
-    //     }
-    // }
+    // Then add the bootnodes
+    for peer in &BOOTNODES {
+        if let Ok(peer_id) = peer.parse() {
+            swarm
+                .behaviour_mut()
+                .kademlia
+                .add_address(&peer_id, "/dnsaddr/bootstrap.libp2p.io".parse()?);
+        }
+    }
 
     let (command_sender, command_receiver) = mpsc::channel(0);
     let (event_sender, event_receiver) = mpsc::channel(0);
@@ -295,13 +304,10 @@ impl EventLoop {
                     .await
                     .expect("Event receiver not to be dropped.");
             }
-            SwarmEvent::Behaviour(BehaviourEvent::Kademlia(_)) => {}
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
                 request_response::Event::Message { message, .. },
             )) => match message {
-                request_response::Message::Request {
-                    request, channel, ..
-                } => {
+                request_response::Message::Request { channel, .. } => {
                     // When receiving a directory request, respond with items from pending_directory_items
                     let items = self
                         .pending_directory_items
@@ -423,21 +429,103 @@ impl EventLoop {
                     todo!("Already dialing peer.");
                 }
             }
-            Command::FindPeer { peer_id, sender } => {
-                let _ = sender.send(());
-            }
             Command::RequestFiles {
                 peer_id,
                 file_names,
                 sender,
             } => {
-                // #TODO: Open a stream allowing users to download files
+                let request_id = self
+                    .swarm
+                    .behaviour_mut()
+                    .request_response
+                    .send_request(&peer_id, DisplayRequest);
+
+                // Store the sender to respond to later
+                self.pending_request_file.insert(request_id, sender);
+
+                // Set up a stream to receive the files
+                let mut stream_control = self.swarm.behaviour().file_stream.new_control();
+
+                // Spawn a task to handle incoming file streams
+                let current_dir =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let file_names_clone = file_names.clone();
+
+                tokio::spawn(async move {
+                    let mut incoming_streams =
+                        stream_control.accept(JUNKANOO_FILE_PROTOCOL).unwrap();
+
+                    while let Some((_, mut stream)) = incoming_streams.next().await {
+                        // Create a directory structure based on the file path
+                        for file_name in &file_names_clone {
+                            let file_path = current_dir.join(file_name);
+
+                            // Create parent directories if they don't exist
+                            if let Some(parent) = file_path.parent() {
+                                if let Err(e) = tokio::fs::create_dir_all(parent).await {
+                                    tracing::error!(
+                                        "Failed to create directory {:?}: {}",
+                                        parent,
+                                        e
+                                    );
+                                    continue;
+                                }
+                            }
+
+                            match tokio::fs::File::create(&file_path).await {
+                                Ok(mut file) => {
+                                    let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
+                                    loop {
+                                        match stream.read(&mut buffer).await {
+                                            Ok(0) => break, // EOF
+                                            Ok(n) => {
+                                                if let Err(e) = file.write_all(&buffer[..n]).await {
+                                                    tracing::error!(
+                                                        "Failed to write to file {:?}: {}",
+                                                        file_path,
+                                                        e
+                                                    );
+                                                    break;
+                                                }
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Failed to read from stream: {}",
+                                                    e
+                                                );
+                                                break;
+                                            }
+                                        }
+                                    }
+                                    tracing::info!("Downloaded file: {:?}", file_path);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to create file {:?}: {}", file_path, e);
+                                }
+                            }
+                        }
+                    }
+                });
             }
-            Command::RespondFiles {
-                file_metadata,
-                channel,
-            } => {
-                // #TODO: Stream files as well as the download status
+            Command::RespondFiles { file_metadata, .. } => {
+                let mut stream_control = self.swarm.behaviour().file_stream.new_control();
+
+                for metadata in file_metadata {
+                    let mut incoming_streams =
+                        stream_control.accept(JUNKANOO_FILE_PROTOCOL).unwrap();
+                    let mut transfer = FileTransfer::new(metadata);
+
+                    // Use a bounded semaphore to limit concurrent transfers
+                    let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
+                    tokio::spawn(async move {
+                        while let Some((peer, mut stream)) = incoming_streams.next().await {
+                            if let Err(e) = transfer.stream_file(&mut stream).await {
+                                tracing::error!("Transfer failed to peer {peer} with error: {}", e);
+                            }
+                        }
+                        drop(permit); // Release the semaphore
+                    });
+                }
             }
             Command::GetListeningAddrs { sender } => {
                 let _ = sender.send(Ok(self.swarm.listeners().cloned().collect()));
@@ -493,10 +581,6 @@ enum Command {
         peer_id: PeerId,
         peer_addr: Multiaddr,
         sender: oneshot::Sender<Result<(), Box<dyn Error + Send>>>,
-    },
-    FindPeer {
-        peer_id: PeerId,
-        sender: oneshot::Sender<()>,
     },
     InsertDirectoryItems {
         peer_id: PeerId,

@@ -20,12 +20,14 @@ better-panic = "0.3"
 chrono = "0.4.39"
 crossbeam-channel = "0.5.14"
 clap = { version = "4.5.23", features = ["cargo"] }
-crossterm = "0.28.1" # use the same version as tui
+crossterm = "0.29.0"
 dirs-next = "2.0.0"
 futures = "0.3.31"
 itertools = "0.14.0"
+once_cell = "1.21.3"
 lazy_static = "1.5.0"
 libp2p = { version = "0.54.1", features = [
+	"rsa",
 	"tokio",
 	"cbor",
 	"dns",

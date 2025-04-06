@@ -39,7 +39,6 @@ pub enum AppState {
     Share,
     Download,
     Loading,
-    Searching,
 }
 
 impl App {
