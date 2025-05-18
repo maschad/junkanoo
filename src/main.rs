@@ -145,6 +145,15 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                                 let full_addr = format!("{}/p2p/{}", addr, app.peer_id);
                                 if let Err(e) = clipboard.set_text(full_addr) {
                                     tracing::error!("Failed to copy address to clipboard: {}", e);
+                                } else {
+                                    app.clipboard_success = true;
+                                    // Reset clipboard success after 2 seconds
+                                    let mut app_clone = app.clone();
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(2))
+                                            .await;
+                                        app_clone.clipboard_success = false;
+                                    });
                                 }
                             }
                         }
@@ -167,7 +176,11 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                             if app.is_host {
                                 app.start_share();
                             } else {
-                                app.start_download();
+                                let mut app_clone = app.clone();
+                                drop(app);
+                                tokio::spawn(async move {
+                                    app_clone.start_download().await;
+                                });
                             }
                         }
                         _ => {}
@@ -188,6 +201,7 @@ async fn start_network(
     {
         let mut app = app.lock();
         app.peer_id = peer_id;
+        app.set_client(client.clone());
     }
 
     // Spawn the network event handler
@@ -307,6 +321,12 @@ async fn handle_network_events(
                 let mut app = app.lock();
                 app.connected = false;
                 // Notify the UI to refresh
+                if let Some(tx) = app.refresh_sender() {
+                    let _ = tx.try_send(());
+                }
+            }
+            NetworkEvent::InboundRequest { request, channel } => {
+                let mut app = app.lock();
                 if let Some(tx) = app.refresh_sender() {
                     let _ = tx.try_send(());
                 }

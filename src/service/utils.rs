@@ -7,7 +7,6 @@ use tokio::io::AsyncReadExt;
 pub struct FileTransfer {
     path: PathBuf,
     chunk_size: usize,
-    total_size: u64,
     progress: u64,
 }
 
@@ -16,7 +15,6 @@ impl FileTransfer {
         Self {
             path: metadata.path.into(),
             chunk_size: 1024 * 1024, // 1MB chunks
-            total_size: metadata.size,
             progress: 0,
         }
     }

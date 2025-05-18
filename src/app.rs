@@ -1,3 +1,4 @@
+use crate::service::node::{Client, FileMetadata};
 use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -21,7 +22,9 @@ pub struct App {
     pub items_being_shared: HashSet<PathBuf>,
     pub items_to_download: HashSet<PathBuf>,
     pub items_being_downloaded: HashSet<PathBuf>,
+    pub clipboard_success: bool,
     refresh_sender: Option<Sender<()>>,
+    client: Option<Client>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,7 +60,9 @@ impl App {
             items_being_shared: HashSet::new(),
             items_to_download: HashSet::new(),
             items_being_downloaded: HashSet::new(),
+            clipboard_success: false,
             refresh_sender: None,
+            client: None,
         };
 
         if app.is_host && matches!(app.state, AppState::Share) {
@@ -65,6 +70,10 @@ impl App {
         }
 
         app
+    }
+
+    pub fn set_client(&mut self, client: Client) {
+        self.client = Some(client);
     }
 
     fn populate_directory_items(&mut self) {
@@ -199,15 +208,16 @@ impl App {
                                 items_set.insert(rel_path.to_path_buf());
                             }
                         }
+                        item.selected = true;
+                        // Update the cached version
+                        if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path)
+                        {
+                            if let Some(cached_item) = cached_items.get_mut(index) {
+                                cached_item.selected = true;
+                            }
+                        }
                     }
                     _ => {}
-                }
-                item.selected = true;
-                // Update the cached version
-                if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path) {
-                    if let Some(cached_item) = cached_items.get_mut(index) {
-                        cached_item.selected = true;
-                    }
                 }
             }
         }
@@ -218,10 +228,14 @@ impl App {
             if let Some(item) = self.directory_items.get_mut(index) {
                 match self.state {
                     AppState::Share => {
-                        self.items_to_share.remove(&item.path);
+                        if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
+                            self.items_to_share.remove(&rel_path.to_path_buf());
+                        }
                     }
                     AppState::Download => {
-                        self.items_to_download.remove(&item.path);
+                        if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
+                            self.items_to_download.remove(&rel_path.to_path_buf());
+                        }
                     }
                     _ => {}
                 }
@@ -280,17 +294,47 @@ impl App {
         self.state = AppState::Loading;
     }
 
-    pub fn start_download(&mut self) {
+    pub async fn start_download(&mut self) {
         if !self.connected {
             panic!("Cannot start downloading - not connected to a peer");
         }
+
+        // Check if any files are selected
+        if self.items_to_download.is_empty() {
+            tracing::warn!("No files selected for download");
+            return;
+        }
+
         self.items_being_downloaded = self.items_to_download.clone();
         self.state = AppState::Loading;
-        // TODO: Request files from peer store for remote download
-    }
 
-    pub fn set_refresh_sender(&mut self, sender: Sender<()>) {
-        self.refresh_sender = Some(sender);
+        // Get the list of files to download
+        let file_names: Vec<String> = self
+            .items_to_download
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+
+        tracing::info!("Starting download of files: {:?}", file_names);
+
+        // Request files from peer
+        if let Some(client) = &mut self.client {
+            match client.request_files(self.peer_id, file_names).await {
+                Ok(_) => {
+                    tracing::info!("Download completed successfully");
+                    self.state = AppState::Download;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to request files: {}", e);
+                    self.state = AppState::Download;
+                }
+            }
+        }
+
+        // Notify UI to refresh
+        if let Some(refresh_sender) = &self.refresh_sender {
+            let _ = refresh_sender.try_send(());
+        }
     }
 
     pub fn refresh_sender(&self) -> Option<&Sender<()>> {

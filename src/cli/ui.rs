@@ -119,82 +119,102 @@ fn render_title(frame: &mut Frame, area: Rect, is_host: bool) {
 }
 
 fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .directory_items
-        .iter()
-        .map(|item| {
-            let indent = "  ".repeat(item.depth);
-            let selected = match app.state {
-                AppState::Share => {
-                    if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
-                        if app.items_to_share.contains(&rel_path.to_path_buf()) {
-                            "🔵 "
-                        } else {
-                            "  "
+    match app.state {
+        AppState::Loading => {
+            let loading_text = "Downloading files...";
+            let loading = Paragraph::new(loading_text)
+                .block(Block::default().title("Status").borders(Borders::ALL))
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(loading, area);
+        }
+        AppState::Download
+            if app.items_to_download.is_empty() && app.items_being_downloaded.is_empty() =>
+        {
+            let warning_text = "No files selected for download. Press 'Y' to select files.";
+            let warning = Paragraph::new(warning_text)
+                .block(Block::default().title("Warning").borders(Borders::ALL))
+                .style(Style::default().fg(Color::Red));
+            frame.render_widget(warning, area);
+        }
+        _ => {
+            let items: Vec<ListItem> = app
+                .directory_items
+                .iter()
+                .map(|item| {
+                    let indent = "  ".repeat(item.depth);
+                    let selected = match app.state {
+                        AppState::Share => {
+                            if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
+                                if app.items_to_share.contains(&rel_path.to_path_buf()) {
+                                    "🔵 "
+                                } else {
+                                    "  "
+                                }
+                            } else {
+                                "  "
+                            }
                         }
-                    } else {
-                        "  "
-                    }
-                }
-                AppState::Download => {
-                    if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
-                        if app.items_to_download.contains(&rel_path.to_path_buf()) {
-                            "🔵 "
-                        } else {
-                            "  "
+                        AppState::Download => {
+                            if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
+                                if app.items_to_download.contains(&rel_path.to_path_buf()) {
+                                    "🔵 "
+                                } else {
+                                    "  "
+                                }
+                            } else {
+                                "  "
+                            }
                         }
+                        _ => "  ",
+                    };
+                    let prefix = if item.is_dir { "📁 " } else { "📄 " };
+
+                    let style = if Some(item.index) == app.selected_index.or(Some(0)) {
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD)
+                    } else if matches!(app.state, AppState::Share)
+                        && app.items_to_share.contains(
+                            &item
+                                .path
+                                .strip_prefix(&app.current_path)
+                                .unwrap_or(&PathBuf::new())
+                                .to_path_buf(),
+                        )
+                        || matches!(app.state, AppState::Download)
+                            && app.items_to_download.contains(
+                                &item
+                                    .path
+                                    .strip_prefix(&app.current_path)
+                                    .unwrap_or(&PathBuf::new())
+                                    .to_path_buf(),
+                            )
+                    {
+                        Style::default().fg(Color::Green)
                     } else {
-                        "  "
-                    }
-                }
-                _ => "  ",
-            };
-            let prefix = if item.is_dir { "📁 " } else { "📄 " };
+                        Style::default()
+                    };
 
-            let style = if Some(item.index) == app.selected_index.or(Some(0)) {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else if matches!(app.state, AppState::Share)
-                && app.items_to_share.contains(
-                    &item
-                        .path
-                        .strip_prefix(&app.current_path)
-                        .unwrap_or(&PathBuf::new())
-                        .to_path_buf(),
-                )
-                || matches!(app.state, AppState::Download)
-                    && app.items_to_download.contains(
-                        &item
-                            .path
-                            .strip_prefix(&app.current_path)
-                            .unwrap_or(&PathBuf::new())
-                            .to_path_buf(),
-                    )
-            {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default()
-            };
+                    ListItem::new(Line::from(vec![
+                        Span::raw(indent),
+                        Span::styled(selected, style),
+                        Span::styled(format!("{}{}", prefix, item.name), style),
+                    ]))
+                })
+                .collect();
 
-            ListItem::new(Line::from(vec![
-                Span::raw(indent),
-                Span::styled(selected, style),
-                Span::styled(format!("{}{}", prefix, item.name), style),
-            ]))
-        })
-        .collect();
+            let current_path = format!(" {} ", app.current_path.display());
+            let files_list = List::new(items)
+                .block(Block::default().title(current_path).borders(Borders::ALL))
+                .highlight_style(
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                );
 
-    let current_path = format!(" {} ", app.current_path.display());
-    let files_list = List::new(items)
-        .block(Block::default().title(current_path).borders(Borders::ALL))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
-
-    frame.render_widget(files_list, area);
+            frame.render_widget(files_list, area);
+        }
+    }
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -232,15 +252,19 @@ fn render_connect_info(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         app.listening_addrs
             .iter()
-            // .filter(|addr: &&libp2p::Multiaddr| !addr.to_string().contains("127.0.0"))
             .map(|addr| {
                 let addr_str = if addr.to_string().contains("/p2p/") {
                     addr.to_string()
                 } else {
                     format!("{}/p2p/{}", addr, app.peer_id)
                 };
+                let icon = if app.clipboard_success {
+                    "✅ " // Checkmark icon
+                } else {
+                    "📋 " // Clipboard icon
+                };
                 ListItem::new(Line::from(vec![
-                    Span::raw("📋 "), // Clipboard icon
+                    Span::raw(icon),
                     Span::styled(
                         addr_str,
                         Style::default()

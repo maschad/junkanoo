@@ -195,39 +195,6 @@ impl Client {
         receiver.await.expect("Sender not to be dropped.")
     }
 
-    /// Request the content of the given file from the given peer.
-    pub(crate) async fn request_file(
-        &mut self,
-        file_names: Vec<String>,
-        peer_id: PeerId,
-    ) -> Result<Vec<u8>, Box<dyn Error + Send>> {
-        let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(Command::RequestFiles {
-                peer_id,
-                file_names,
-                sender,
-            })
-            .await
-            .expect("Command receiver not to be dropped.");
-        receiver.await.expect("Sender not be dropped.")
-    }
-
-    /// Respond with the provided file content to the given request.
-    pub(crate) async fn respond_file(
-        &mut self,
-        file_metadata: Vec<FileMetadata>,
-        channel: ResponseChannel<FileResponse>,
-    ) {
-        self.sender
-            .send(Command::RespondFiles {
-                file_metadata,
-                channel,
-            })
-            .await
-            .expect("Command receiver not to be dropped.");
-    }
-
     /// Send the current directory items to the given peer.
     pub(crate) async fn insert_directory_items(
         &mut self,
@@ -239,6 +206,24 @@ impl Client {
             .send(Command::InsertDirectoryItems {
                 peer_id,
                 directory_items,
+                sender,
+            })
+            .await
+            .expect("Command receiver not to be dropped.");
+        receiver.await.expect("Sender not to be dropped.")
+    }
+
+    /// Request files from the given peer.
+    pub(crate) async fn request_files(
+        &mut self,
+        peer_id: PeerId,
+        file_names: Vec<String>,
+    ) -> Result<Vec<u8>, Box<dyn Error + Send>> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(Command::RequestFiles {
+                peer_id,
+                file_names,
                 sender,
             })
             .await
@@ -337,11 +322,14 @@ impl EventLoop {
                     request_id, error, ..
                 },
             )) => {
-                let _ = self
-                    .pending_request_display
-                    .remove(&request_id)
-                    .expect("Request to still be pending.")
-                    .send(Err(Box::new(error)));
+                // Try both maps since we don't know which type of request failed
+                if let Some(sender) = self.pending_request_display.remove(&request_id) {
+                    let _ = sender.send(Err(Box::new(error)));
+                } else if let Some(sender) = self.pending_request_file.remove(&request_id) {
+                    let _ = sender.send(Err(Box::new(error)));
+                } else {
+                    tracing::warn!("Received failure for unknown request ID: {:?}", request_id);
+                }
             }
             SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
                 request_response::Event::ResponseSent { .. },
@@ -434,33 +422,34 @@ impl EventLoop {
                 file_names,
                 sender,
             } => {
+                tracing::info!("Starting file request for files: {:?}", file_names);
                 let request_id = self
                     .swarm
                     .behaviour_mut()
                     .request_response
                     .send_request(&peer_id, DisplayRequest);
 
-                // Store the sender to respond to later
-                self.pending_request_file.insert(request_id, sender);
+                // Remove the sender from pending_request_file since we're moving it into the task
+                self.pending_request_file.remove(&request_id);
 
-                // Set up a stream to receive the files
                 let mut stream_control = self.swarm.behaviour().file_stream.new_control();
-
-                // Spawn a task to handle incoming file streams
                 let current_dir =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
                 let file_names_clone = file_names.clone();
 
                 tokio::spawn(async move {
-                    let mut incoming_streams =
-                        stream_control.accept(JUNKANOO_FILE_PROTOCOL).unwrap();
-
-                    while let Some((_, mut stream)) = incoming_streams.next().await {
-                        // Create a directory structure based on the file path
+                    let mut result = Ok(Vec::new());
+                    tracing::info!("Waiting for file transfer stream to be established...");
+                    if let Some((peer, mut stream)) = stream_control
+                        .accept(JUNKANOO_FILE_PROTOCOL)
+                        .unwrap()
+                        .next()
+                        .await
+                    {
+                        tracing::info!("File transfer stream established with peer {}", peer);
                         for file_name in &file_names_clone {
                             let file_path = current_dir.join(file_name);
-
-                            // Create parent directories if they don't exist
+                            tracing::info!("Starting download of file: {:?}", file_path);
                             if let Some(parent) = file_path.parent() {
                                 if let Err(e) = tokio::fs::create_dir_all(parent).await {
                                     tracing::error!(
@@ -468,23 +457,40 @@ impl EventLoop {
                                         parent,
                                         e
                                     );
-                                    continue;
+                                    result = Err(Box::new(e) as Box<dyn Error + Send>);
+                                    break;
                                 }
                             }
 
                             match tokio::fs::File::create(&file_path).await {
                                 Ok(mut file) => {
                                     let mut buffer = vec![0u8; 1024 * 1024]; // 1MB buffer
+                                    let mut total_bytes = 0;
                                     loop {
                                         match stream.read(&mut buffer).await {
-                                            Ok(0) => break, // EOF
+                                            Ok(0) => {
+                                                tracing::info!(
+                                                    "Finished downloading file: {:?} ({} bytes)",
+                                                    file_path,
+                                                    total_bytes
+                                                );
+                                                break;
+                                            }
                                             Ok(n) => {
+                                                total_bytes += n;
+                                                tracing::debug!(
+                                                    "Received {} bytes for file {:?}",
+                                                    n,
+                                                    file_path
+                                                );
                                                 if let Err(e) = file.write_all(&buffer[..n]).await {
                                                     tracing::error!(
                                                         "Failed to write to file {:?}: {}",
                                                         file_path,
                                                         e
                                                     );
+                                                    result =
+                                                        Err(Box::new(e) as Box<dyn Error + Send>);
                                                     break;
                                                 }
                                             }
@@ -493,37 +499,77 @@ impl EventLoop {
                                                     "Failed to read from stream: {}",
                                                     e
                                                 );
+                                                result = Err(Box::new(e) as Box<dyn Error + Send>);
                                                 break;
                                             }
                                         }
                                     }
-                                    tracing::info!("Downloaded file: {:?}", file_path);
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to create file {:?}: {}", file_path, e);
+                                    result = Err(Box::new(e) as Box<dyn Error + Send>);
+                                    break;
                                 }
                             }
                         }
+                    } else {
+                        tracing::error!("Failed to establish file transfer stream");
+                        result = Err(Box::new(std::io::Error::new(
+                            std::io::ErrorKind::ConnectionAborted,
+                            "Failed to establish file transfer stream",
+                        )) as Box<dyn Error + Send>);
                     }
+                    let _ = sender.send(result);
                 });
             }
             Command::RespondFiles { file_metadata, .. } => {
-                let mut stream_control = self.swarm.behaviour().file_stream.new_control();
+                tracing::info!("Starting file response for files: {:?}", file_metadata);
+                let stream_control = self.swarm.behaviour().file_stream.new_control();
 
                 for metadata in file_metadata {
-                    let mut incoming_streams =
-                        stream_control.accept(JUNKANOO_FILE_PROTOCOL).unwrap();
-                    let mut transfer = FileTransfer::new(metadata);
-
-                    // Use a bounded semaphore to limit concurrent transfers
+                    let mut stream_control = stream_control.clone();
                     let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
+                    let metadata_clone = metadata.clone();
+
                     tokio::spawn(async move {
-                        while let Some((peer, mut stream)) = incoming_streams.next().await {
+                        tracing::info!(
+                            "Waiting for file transfer stream for file: {:?}",
+                            metadata_clone.path
+                        );
+                        if let Some((peer, mut stream)) = stream_control
+                            .accept(JUNKANOO_FILE_PROTOCOL)
+                            .unwrap()
+                            .next()
+                            .await
+                        {
+                            tracing::info!(
+                                "File transfer stream established with peer {} for file: {:?}",
+                                peer,
+                                metadata_clone.path
+                            );
+                            let path = metadata_clone.path.clone();
+                            let mut transfer = FileTransfer::new(metadata_clone);
                             if let Err(e) = transfer.stream_file(&mut stream).await {
-                                tracing::error!("Transfer failed to peer {peer} with error: {}", e);
+                                tracing::error!(
+                                    "Transfer failed to peer {} for file {:?} with error: {}",
+                                    peer,
+                                    path,
+                                    e
+                                );
+                            } else {
+                                tracing::info!(
+                                    "Successfully transferred file {:?} to peer {}",
+                                    path,
+                                    peer
+                                );
                             }
+                        } else {
+                            tracing::error!(
+                                "Failed to establish file transfer stream for file: {:?}",
+                                metadata_clone.path
+                            );
                         }
-                        drop(permit); // Release the semaphore
+                        drop(permit);
                     });
                 }
             }
@@ -569,6 +615,36 @@ struct Behaviour {
     request_response: request_response::cbor::Behaviour<DisplayRequest, DisplayResponse>,
     kademlia: kad::Behaviour<kad::store::MemoryStore>,
     file_stream: stream::Behaviour,
+}
+
+impl Behaviour {
+    async fn handle_file_request(
+        &mut self,
+        peer_id: PeerId,
+        file_names: Vec<String>,
+    ) -> Result<(), Box<dyn Error + Send>> {
+        let mut stream_control = self.file_stream.new_control();
+        let mut incoming_streams = stream_control.accept(JUNKANOO_FILE_PROTOCOL).unwrap();
+
+        for file_name in file_names {
+            let mut transfer = FileTransfer::new(FileMetadata {
+                path: file_name.clone(),
+                size: 0,
+                chunks: 0,
+            });
+
+            // Use a bounded semaphore to limit concurrent transfers
+            let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
+            while let Some((peer, mut stream)) = incoming_streams.next().await {
+                if let Err(e) = transfer.stream_file(&mut stream).await {
+                    tracing::error!("Transfer failed to peer {peer} with error: {}", e);
+                }
+            }
+            drop(permit); // Release the semaphore
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
