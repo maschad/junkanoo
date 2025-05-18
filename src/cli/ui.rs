@@ -127,45 +127,54 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
                 .style(Style::default().fg(Color::Yellow));
             frame.render_widget(loading, area);
         }
-        AppState::Download
-            if app.items_to_download.is_empty() && app.items_being_downloaded.is_empty() =>
-        {
-            let warning_text = "No files selected for download. Press 'Y' to select files.";
-            let warning = Paragraph::new(warning_text)
-                .block(Block::default().title("Warning").borders(Borders::ALL))
-                .style(Style::default().fg(Color::Red));
-            frame.render_widget(warning, area);
-        }
         _ => {
             let items: Vec<ListItem> = app
                 .directory_items
                 .iter()
                 .map(|item| {
                     let indent = "  ".repeat(item.depth);
-                    let selected = match app.state {
-                        AppState::Share => {
-                            if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
+                    let selected = if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
+                        match app.state {
+                            AppState::Share => {
                                 if app.items_to_share.contains(&rel_path.to_path_buf()) {
                                     "🔵 "
                                 } else {
                                     "  "
                                 }
-                            } else {
-                                "  "
                             }
-                        }
-                        AppState::Download => {
-                            if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
-                                if app.items_to_download.contains(&rel_path.to_path_buf()) {
+                            AppState::Download => {
+                                tracing::debug!("Checking download selection for: {}", item.name);
+                                let path_buf = PathBuf::from(&item.name);
+                                if app.items_to_download.contains(&path_buf) {
+                                    tracing::debug!("Item {} is selected", item.name);
                                     "🔵 "
                                 } else {
+                                    tracing::debug!("Item {} is not selected", item.name);
                                     "  "
                                 }
-                            } else {
-                                "  "
                             }
+                            _ => "  ",
                         }
-                        _ => "  ",
+                    } else {
+                        match app.state {
+                            AppState::Download => {
+                                let path_buf = PathBuf::from(&item.name);
+                                if app.items_to_download.contains(&path_buf) {
+                                    tracing::debug!(
+                                        "Item {} is selected (using filename)",
+                                        item.name
+                                    );
+                                    "🔵 "
+                                } else {
+                                    tracing::debug!(
+                                        "Item {} is not selected (using filename)",
+                                        item.name
+                                    );
+                                    "  "
+                                }
+                            }
+                            _ => "  ",
+                        }
                     };
                     let prefix = if item.is_dir { "📁 " } else { "📄 " };
 
@@ -173,23 +182,22 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD)
-                    } else if matches!(app.state, AppState::Share)
-                        && app.items_to_share.contains(
+                    } else if match app.state {
+                        AppState::Share => app.items_to_share.contains(
                             &item
                                 .path
                                 .strip_prefix(&app.current_path)
                                 .unwrap_or(&PathBuf::new())
                                 .to_path_buf(),
-                        )
-                        || matches!(app.state, AppState::Download)
-                            && app.items_to_download.contains(
-                                &item
-                                    .path
-                                    .strip_prefix(&app.current_path)
-                                    .unwrap_or(&PathBuf::new())
-                                    .to_path_buf(),
-                            )
-                    {
+                        ),
+                        AppState::Download => {
+                            let path_buf = PathBuf::from(&item.name);
+                            let is_selected = app.items_to_download.contains(&path_buf);
+                            tracing::debug!("Item {} style check: {}", item.name, is_selected);
+                            is_selected
+                        }
+                        _ => false,
+                    } {
                         Style::default().fg(Color::Green)
                     } else {
                         Style::default()

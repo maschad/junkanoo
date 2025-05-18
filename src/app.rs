@@ -65,7 +65,8 @@ impl App {
             client: None,
         };
 
-        if app.is_host && matches!(app.state, AppState::Share) {
+        // Populate directory items in both share and download modes
+        if matches!(app.state, AppState::Share) || matches!(app.state, AppState::Download) {
             app.populate_directory_items();
         }
 
@@ -76,10 +77,16 @@ impl App {
         self.client = Some(client);
     }
 
-    fn populate_directory_items(&mut self) {
+    pub fn populate_directory_items(&mut self) {
+        tracing::debug!("Populating directory items");
         // Check if we have cached items for this directory
         if let Some(cached_items) = self.directory_cache.get(&self.current_path) {
             self.directory_items = cached_items.clone();
+            // Initialize selected_index if it's None
+            if self.selected_index.is_none() && !self.directory_items.is_empty() {
+                self.selected_index = Some(0);
+                tracing::debug!("Initialized selected_index to 0");
+            }
             return;
         }
 
@@ -122,10 +129,20 @@ impl App {
                 item.index = i;
             }
 
+            // Initialize selected_index if it's None
+            if self.selected_index.is_none() && !self.directory_items.is_empty() {
+                self.selected_index = Some(0);
+                tracing::debug!("Initialized selected_index to 0");
+            }
+
             // Cache the items for this directory
             self.directory_cache
                 .insert(self.current_path.clone(), self.directory_items.clone());
         }
+        tracing::debug!(
+            "Directory items populated, selected_index: {:?}",
+            self.selected_index
+        );
     }
 
     pub fn navigate_next_file(&mut self) {
@@ -133,11 +150,13 @@ impl App {
             return;
         }
 
+        tracing::debug!("Navigating to next file");
         self.selected_index = match self.selected_index {
             Some(i) if i < self.directory_items.len() - 1 => Some(i + 1),
             None => Some(0),
             _ => self.selected_index,
         };
+        tracing::debug!("Selected index is now: {:?}", self.selected_index);
     }
 
     pub fn navigate_previous_file(&mut self) {
@@ -145,20 +164,24 @@ impl App {
             return;
         }
 
+        tracing::debug!("Navigating to previous file");
         self.selected_index = match self.selected_index {
             Some(i) if i > 0 => Some(i - 1),
             None => Some(self.directory_items.len() - 1),
             _ => self.selected_index,
         };
+        tracing::debug!("Selected index is now: {:?}", self.selected_index);
     }
 
     pub fn enter_directory(&mut self) -> bool {
+        tracing::debug!("Entering directory");
         if let Some(index) = self.selected_index {
             if let Some(item) = self.directory_items.get(index) {
                 if item.is_dir {
                     self.current_path = item.path.clone();
                     self.selected_index = None;
                     self.populate_directory_items();
+                    tracing::debug!("Entered directory: {}", self.current_path.display());
                     return true;
                 }
             }
@@ -167,18 +190,24 @@ impl App {
     }
 
     pub fn go_up_previous_directory(&mut self) {
+        tracing::debug!("Going up to previous directory");
         if let Some(parent) = self.current_path.parent() {
             self.current_path = parent.to_path_buf();
             self.selected_index = None;
             self.populate_directory_items();
+            tracing::debug!("Went up to directory: {}", self.current_path.display());
         }
     }
 
     pub fn select_item(&mut self) {
+        tracing::debug!("select_item called");
         if let Some(index) = self.selected_index {
+            tracing::debug!("Selected index: {}", index);
             if let Some(item) = self.directory_items.get_mut(index) {
+                tracing::debug!("Found item: {}", item.name);
                 match self.state {
                     AppState::Share | AppState::Download => {
+                        tracing::debug!("In Share/Download state");
                         let items_set = match self.state {
                             AppState::Share => &mut self.items_to_share,
                             AppState::Download => &mut self.items_to_download,
@@ -186,9 +215,12 @@ impl App {
                         };
 
                         if item.is_dir {
+                            tracing::debug!("Item is directory");
                             // Add the directory itself with its relative path
                             if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                                items_set.insert(rel_path.to_path_buf());
+                                let path_buf = rel_path.to_path_buf();
+                                items_set.insert(path_buf.clone());
+                                tracing::debug!("Added directory to selection: {:?}", path_buf);
 
                                 // Add all files and subdirectories with their relative paths
                                 for entry in walkdir::WalkDir::new(&item.path)
@@ -198,14 +230,30 @@ impl App {
                                     if let Ok(entry_rel_path) =
                                         entry.path().strip_prefix(&self.current_path)
                                     {
-                                        items_set.insert(entry_rel_path.to_path_buf());
+                                        let path_buf = entry_rel_path.to_path_buf();
+                                        items_set.insert(path_buf.clone());
+                                        tracing::debug!(
+                                            "Added sub-item to selection: {:?}",
+                                            path_buf
+                                        );
                                     }
                                 }
                             }
                         } else {
+                            tracing::debug!("Item is file");
                             // For single files, store relative to current directory
                             if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                                items_set.insert(rel_path.to_path_buf());
+                                let path_buf = rel_path.to_path_buf();
+                                items_set.insert(path_buf.clone());
+                                tracing::debug!("Added file to selection: {:?}", path_buf);
+                            } else {
+                                // If we can't strip the prefix, just use the filename
+                                let path_buf = PathBuf::from(&item.name);
+                                items_set.insert(path_buf.clone());
+                                tracing::debug!(
+                                    "Added file to selection using filename: {:?}",
+                                    path_buf
+                                );
                             }
                         }
                         item.selected = true;
@@ -216,28 +264,60 @@ impl App {
                                 cached_item.selected = true;
                             }
                         }
+                        // Notify UI to refresh
+                        if let Some(refresh_sender) = &self.refresh_sender {
+                            tracing::debug!("Selecting item");
+                            let _ = refresh_sender.try_send(());
+                        }
+                        // Log the current state of selections
+                        tracing::debug!("Current selections: {:?}", items_set);
                     }
-                    _ => {}
+                    _ => {
+                        tracing::debug!("Not in Share/Download state");
+                    }
                 }
+            } else {
+                tracing::debug!("No item found at index {}", index);
             }
+        } else {
+            tracing::debug!("No selected index");
         }
     }
 
     pub fn unselect_item(&mut self) {
+        tracing::debug!("unselect_item called");
         if let Some(index) = self.selected_index {
+            tracing::debug!("Selected index: {}", index);
             if let Some(item) = self.directory_items.get_mut(index) {
+                tracing::debug!("Found item: {}", item.name);
                 match self.state {
                     AppState::Share => {
+                        tracing::debug!("In Share state");
                         if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                            self.items_to_share.remove(&rel_path.to_path_buf());
+                            let path_buf = rel_path.to_path_buf();
+                            self.items_to_share.remove(&path_buf);
+                            tracing::debug!("Removed from share selection: {:?}", path_buf);
                         }
                     }
                     AppState::Download => {
+                        tracing::debug!("In Download state");
                         if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                            self.items_to_download.remove(&rel_path.to_path_buf());
+                            let path_buf = rel_path.to_path_buf();
+                            self.items_to_download.remove(&path_buf);
+                            tracing::debug!("Removed from download selection: {:?}", path_buf);
+                        } else {
+                            // If we can't strip the prefix, try removing by filename
+                            let path_buf = PathBuf::from(&item.name);
+                            self.items_to_download.remove(&path_buf);
+                            tracing::debug!(
+                                "Removed from download selection using filename: {:?}",
+                                path_buf
+                            );
                         }
                     }
-                    _ => {}
+                    _ => {
+                        tracing::debug!("Not in Share/Download state");
+                    }
                 }
                 item.selected = false;
                 // Update the cached version
@@ -246,7 +326,26 @@ impl App {
                         cached_item.selected = false;
                     }
                 }
+                // Notify UI to refresh
+                if let Some(refresh_sender) = &self.refresh_sender {
+                    tracing::debug!("Unselecting item");
+                    let _ = refresh_sender.try_send(());
+                }
+                // Log the current state of selections
+                match self.state {
+                    AppState::Share => {
+                        tracing::debug!("Current share selections: {:?}", self.items_to_share)
+                    }
+                    AppState::Download => {
+                        tracing::debug!("Current download selections: {:?}", self.items_to_download)
+                    }
+                    _ => {}
+                }
+            } else {
+                tracing::debug!("No item found at index {}", index);
             }
+        } else {
+            tracing::debug!("No selected index");
         }
     }
 
@@ -305,6 +404,10 @@ impl App {
             return;
         }
 
+        tracing::debug!(
+            "Starting download with {} items",
+            self.items_to_download.len()
+        );
         self.items_being_downloaded = self.items_to_download.clone();
         self.state = AppState::Loading;
 

@@ -176,11 +176,19 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                             if app.is_host {
                                 app.start_share();
                             } else {
+                                // Clone the app before dropping the lock
                                 let mut app_clone = app.clone();
-                                drop(app);
-                                tokio::spawn(async move {
-                                    app_clone.start_download().await;
-                                });
+                                // Keep the lock until we're done with the app
+                                {
+                                    tracing::debug!(
+                                        "Starting download with {} items selected",
+                                        app.items_to_download.len()
+                                    );
+                                    // Start the download in a new task
+                                    tokio::spawn(async move {
+                                        app_clone.start_download().await;
+                                    });
+                                }
                             }
                         }
                         _ => {}
