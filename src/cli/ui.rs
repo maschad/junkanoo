@@ -144,7 +144,6 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
             frame.render_widget(loading, area);
         }
         _ => {
-            tracing::debug!("App warning being rendered: {:?}", app.is_warning);
             if app.is_warning {
                 let warning = Paragraph::new(app.warning_message.clone())
                     .block(Block::default().title("Warning").borders(Borders::ALL))

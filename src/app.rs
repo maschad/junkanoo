@@ -25,6 +25,7 @@ pub struct App {
     pub clipboard_success: bool,
     pub is_warning: bool,
     pub warning_message: String,
+    pub warning_timer: Option<std::time::Instant>,
     pub refresh_sender: Option<Sender<()>>,
     client: Option<Client>,
 }
@@ -65,6 +66,7 @@ impl App {
             clipboard_success: false,
             is_warning: false,
             warning_message: String::new(),
+            warning_timer: None,
             refresh_sender: None,
             client: None,
         };

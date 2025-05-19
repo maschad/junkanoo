@@ -1,6 +1,6 @@
 use std::{io::Stdout, sync::Arc};
 
-use app::{App, AppState, DirectoryItem};
+use app::{App, DirectoryItem};
 use arboard::Clipboard;
 use cli::ui;
 use crossterm::{
@@ -145,6 +145,22 @@ fn cleanup_terminal() {
 
 fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex<App>>) {
     loop {
+        // Check warning timer before rendering
+        {
+            let mut app = app.lock();
+            if let Some(timer) = app.warning_timer {
+                if timer.elapsed() >= std::time::Duration::from_secs(2) {
+                    app.is_warning = false;
+                    app.warning_message = String::new();
+                    app.warning_timer = None;
+                    // Notify UI to refresh
+                    if let Some(refresh_sender) = app.refresh_sender() {
+                        let _ = refresh_sender.try_send(());
+                    }
+                }
+            }
+        }
+
         terminal
             .draw(|frame| ui::render(frame, &app.lock()))
             .expect("Failed to draw");
@@ -202,6 +218,8 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                                     if let Some(refresh_sender) = app.refresh_sender() {
                                         let _ = refresh_sender.try_send(());
                                     }
+                                    // Set a timer to reset the warning
+                                    app.warning_timer = Some(std::time::Instant::now());
                                 } else {
                                     // Clone the app before dropping the lock
                                     let mut app_clone = app.clone();
