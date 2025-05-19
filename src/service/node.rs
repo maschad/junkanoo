@@ -277,12 +277,12 @@ impl EventLoop {
     async fn handle_event(&mut self, event: SwarmEvent<BehaviourEvent>) {
         match event {
             SwarmEvent::NewExternalAddrOfPeer { peer_id, address } => {
-                tracing::debug!("New external address of peer {peer_id}: {address}");
+                tracing::info!("New external address of peer {peer_id}: {address}");
             }
             SwarmEvent::NewListenAddr { address, .. } => {
                 let local_peer_id = *self.swarm.local_peer_id();
                 let addr_with_peer = address.with(Protocol::P2p(local_peer_id));
-                tracing::debug!("Local node is listening on {:?}", addr_with_peer);
+                tracing::info!("Local node is listening on {:?}", addr_with_peer);
 
                 self.event_sender
                     .send(Event::NewListenAddr(addr_with_peer))
@@ -347,7 +347,7 @@ impl EventLoop {
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
-                tracing::debug!("Connected to {peer_id}");
+                tracing::info!("Connected to {peer_id}");
 
                 if endpoint.is_dialer() {
                     if let Some(sender) = self.pending_dial.remove(&peer_id) {
