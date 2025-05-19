@@ -47,11 +47,6 @@ pub fn render(frame: &mut Frame, app: &App) {
 
     render_title(frame, left_chunks[0], app.is_host);
 
-    tracing::debug!(
-        "App warning being rendered in main loop: {:?}",
-        app.is_warning
-    );
-
     // Check for warning state first
     if app.is_warning {
         tracing::warn!("Warning: {}", app.warning_message);
