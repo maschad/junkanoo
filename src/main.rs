@@ -57,7 +57,6 @@ async fn main() {
                         target_peer_addr = Some(peer_addr);
                     }
                     Err(e) => {
-                        tracing::debug!("peer_addr_str: {:?}", peer_addr_str);
                         tracing::error!("Invalid peer ID format: {}", e);
                         std::process::exit(1);
                     }
@@ -74,6 +73,25 @@ async fn main() {
     let app = Arc::new(Mutex::new(app));
     let app_network = app.clone();
     let app_ui = app.clone();
+    let app_ui_refresh = app_ui.clone();
+
+    // Set up refresh channel
+    {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let mut app = app.lock();
+        app.refresh_sender = Some(tx);
+        drop(app); // Release the lock
+
+        // Spawn a task to handle refresh notifications
+        tokio::spawn(async move {
+            while let Some(_) = rx.recv().await {
+                // Force a UI refresh
+                if let Some(tx) = app_ui_refresh.lock().refresh_sender() {
+                    let _ = tx.try_send(());
+                }
+            }
+        });
+    }
 
     // Spawn network task
     tokio::spawn(async move {
@@ -83,7 +101,7 @@ async fn main() {
         }
     });
 
-    // Run UI in main thread - uncomment these lines
+    // Run UI in main thread
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, app_ui);
     cleanup_terminal();
@@ -127,6 +145,22 @@ fn cleanup_terminal() {
 
 fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex<App>>) {
     loop {
+        // Check warning timer before rendering
+        {
+            let mut app = app.lock();
+            if let Some(timer) = app.warning_timer {
+                if timer.elapsed() >= std::time::Duration::from_secs(2) {
+                    app.is_warning = false;
+                    app.warning_message = String::new();
+                    app.warning_timer = None;
+                    // Notify UI to refresh
+                    if let Some(refresh_sender) = app.refresh_sender() {
+                        let _ = refresh_sender.try_send(());
+                    }
+                }
+            }
+        }
+
         terminal
             .draw(|frame| ui::render(frame, &app.lock()))
             .expect("Failed to draw");
@@ -145,6 +179,15 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                                 let full_addr = format!("{}/p2p/{}", addr, app.peer_id);
                                 if let Err(e) = clipboard.set_text(full_addr) {
                                     tracing::error!("Failed to copy address to clipboard: {}", e);
+                                } else {
+                                    app.clipboard_success = true;
+                                    // Reset clipboard success after 2 seconds
+                                    let mut app_clone = app.clone();
+                                    tokio::spawn(async move {
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(2))
+                                            .await;
+                                        app_clone.clipboard_success = false;
+                                    });
                                 }
                             }
                         }
@@ -167,7 +210,31 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                             if app.is_host {
                                 app.start_share();
                             } else {
-                                app.start_download();
+                                // Check if any files are selected before spawning the task
+                                if app.items_to_download.is_empty() {
+                                    app.is_warning = true;
+                                    app.warning_message = "No files selected for download. Please select files first.".to_string();
+                                    // Notify UI to refresh
+                                    if let Some(refresh_sender) = app.refresh_sender() {
+                                        let _ = refresh_sender.try_send(());
+                                    }
+                                    // Set a timer to reset the warning
+                                    app.warning_timer = Some(std::time::Instant::now());
+                                } else {
+                                    // Clone the app before dropping the lock
+                                    let mut app_clone = app.clone();
+                                    // Keep the lock until we're done with the app
+                                    {
+                                        tracing::debug!(
+                                            "Starting download with {} items selected",
+                                            app.items_to_download.len()
+                                        );
+                                        // Start the download in a new task
+                                        tokio::spawn(async move {
+                                            app_clone.start_download().await;
+                                        });
+                                    }
+                                }
                             }
                         }
                         _ => {}
@@ -188,6 +255,7 @@ async fn start_network(
     {
         let mut app = app.lock();
         app.peer_id = peer_id;
+        app.set_client(client.clone());
     }
 
     // Spawn the network event handler
@@ -200,7 +268,6 @@ async fn start_network(
         .expect("Listening not to fail.");
 
     let listening_addrs: Vec<Multiaddr> = client.get_listening_addrs().await.unwrap();
-    tracing::debug!("listening addrs: {:?}", listening_addrs);
 
     // Update listening addresses in a separate lock scope
     {
@@ -234,7 +301,6 @@ async fn start_network(
         // Request directory
         match client.request_directory(target_peer_id).await {
             Ok(display_response) => {
-                tracing::debug!("Received directory response: {:?}", display_response);
                 let mut app = app.lock();
                 app.directory_items = display_response.items;
             }
@@ -285,7 +351,6 @@ async fn handle_network_events(
     while let Some(event) = event_stream.next().await {
         match event {
             NetworkEvent::NewListenAddr(addr) => {
-                tracing::debug!("New listen addr in main: {:?}", addr);
                 let mut app = app.lock();
                 if !app.listening_addrs.contains(&addr) {
                     app.listening_addrs.push(addr);
@@ -307,6 +372,12 @@ async fn handle_network_events(
                 let mut app = app.lock();
                 app.connected = false;
                 // Notify the UI to refresh
+                if let Some(tx) = app.refresh_sender() {
+                    let _ = tx.try_send(());
+                }
+            }
+            NetworkEvent::InboundRequest { request, channel } => {
+                let app = app.lock();
                 if let Some(tx) = app.refresh_sender() {
                     let _ = tx.try_send(());
                 }

@@ -1,3 +1,4 @@
+use crate::service::node::{Client, FileMetadata};
 use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -21,7 +22,12 @@ pub struct App {
     pub items_being_shared: HashSet<PathBuf>,
     pub items_to_download: HashSet<PathBuf>,
     pub items_being_downloaded: HashSet<PathBuf>,
-    refresh_sender: Option<Sender<()>>,
+    pub clipboard_success: bool,
+    pub is_warning: bool,
+    pub warning_message: String,
+    pub warning_timer: Option<std::time::Instant>,
+    pub refresh_sender: Option<Sender<()>>,
+    client: Option<Client>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -34,7 +40,7 @@ pub struct DirectoryItem {
     pub selected: bool,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum AppState {
     Share,
     Download,
@@ -57,20 +63,34 @@ impl App {
             items_being_shared: HashSet::new(),
             items_to_download: HashSet::new(),
             items_being_downloaded: HashSet::new(),
+            clipboard_success: false,
+            is_warning: false,
+            warning_message: String::new(),
+            warning_timer: None,
             refresh_sender: None,
+            client: None,
         };
 
-        if app.is_host && matches!(app.state, AppState::Share) {
+        // Populate directory items in both share and download modes
+        if matches!(app.state, AppState::Share) || matches!(app.state, AppState::Download) {
             app.populate_directory_items();
         }
 
         app
     }
 
-    fn populate_directory_items(&mut self) {
+    pub fn set_client(&mut self, client: Client) {
+        self.client = Some(client);
+    }
+
+    pub fn populate_directory_items(&mut self) {
         // Check if we have cached items for this directory
         if let Some(cached_items) = self.directory_cache.get(&self.current_path) {
             self.directory_items = cached_items.clone();
+            // Initialize selected_index if it's None
+            if self.selected_index.is_none() && !self.directory_items.is_empty() {
+                self.selected_index = Some(0);
+            }
             return;
         }
 
@@ -111,6 +131,11 @@ impl App {
             // Update indices after sorting
             for (i, item) in self.directory_items.iter_mut().enumerate() {
                 item.index = i;
+            }
+
+            // Initialize selected_index if it's None
+            if self.selected_index.is_none() && !self.directory_items.is_empty() {
+                self.selected_index = Some(0);
             }
 
             // Cache the items for this directory
@@ -179,7 +204,8 @@ impl App {
                         if item.is_dir {
                             // Add the directory itself with its relative path
                             if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                                items_set.insert(rel_path.to_path_buf());
+                                let path_buf = rel_path.to_path_buf();
+                                items_set.insert(path_buf.clone());
 
                                 // Add all files and subdirectories with their relative paths
                                 for entry in walkdir::WalkDir::new(&item.path)
@@ -189,25 +215,36 @@ impl App {
                                     if let Ok(entry_rel_path) =
                                         entry.path().strip_prefix(&self.current_path)
                                     {
-                                        items_set.insert(entry_rel_path.to_path_buf());
+                                        let path_buf = entry_rel_path.to_path_buf();
+                                        items_set.insert(path_buf.clone());
                                     }
                                 }
                             }
                         } else {
                             // For single files, store relative to current directory
                             if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                                items_set.insert(rel_path.to_path_buf());
+                                let path_buf = rel_path.to_path_buf();
+                                items_set.insert(path_buf.clone());
+                            } else {
+                                // If we can't strip the prefix, just use the filename
+                                let path_buf = PathBuf::from(&item.name);
+                                items_set.insert(path_buf.clone());
                             }
+                        }
+                        item.selected = true;
+                        // Update the cached version
+                        if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path)
+                        {
+                            if let Some(cached_item) = cached_items.get_mut(index) {
+                                cached_item.selected = true;
+                            }
+                        }
+                        // Notify UI to refresh
+                        if let Some(refresh_sender) = &self.refresh_sender {
+                            let _ = refresh_sender.try_send(());
                         }
                     }
                     _ => {}
-                }
-                item.selected = true;
-                // Update the cached version
-                if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path) {
-                    if let Some(cached_item) = cached_items.get_mut(index) {
-                        cached_item.selected = true;
-                    }
                 }
             }
         }
@@ -218,10 +255,20 @@ impl App {
             if let Some(item) = self.directory_items.get_mut(index) {
                 match self.state {
                     AppState::Share => {
-                        self.items_to_share.remove(&item.path);
+                        if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
+                            let path_buf = rel_path.to_path_buf();
+                            self.items_to_share.remove(&path_buf);
+                        }
                     }
                     AppState::Download => {
-                        self.items_to_download.remove(&item.path);
+                        if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
+                            let path_buf = rel_path.to_path_buf();
+                            self.items_to_download.remove(&path_buf);
+                        } else {
+                            // If we can't strip the prefix, try removing by filename
+                            let path_buf = PathBuf::from(&item.name);
+                            self.items_to_download.remove(&path_buf);
+                        }
                     }
                     _ => {}
                 }
@@ -231,6 +278,10 @@ impl App {
                     if let Some(cached_item) = cached_items.get_mut(index) {
                         cached_item.selected = false;
                     }
+                }
+                // Notify UI to refresh
+                if let Some(refresh_sender) = &self.refresh_sender {
+                    let _ = refresh_sender.try_send(());
                 }
             }
         }
@@ -280,17 +331,41 @@ impl App {
         self.state = AppState::Loading;
     }
 
-    pub fn start_download(&mut self) {
+    pub async fn start_download(&mut self) {
         if !self.connected {
             panic!("Cannot start downloading - not connected to a peer");
         }
+
         self.items_being_downloaded = self.items_to_download.clone();
         self.state = AppState::Loading;
-        // TODO: Request files from peer store for remote download
-    }
 
-    pub fn set_refresh_sender(&mut self, sender: Sender<()>) {
-        self.refresh_sender = Some(sender);
+        // Get the list of files to download
+        let file_names: Vec<String> = self
+            .items_to_download
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect();
+
+        tracing::info!("Starting download of files: {:?}", file_names);
+
+        // Request files from peer
+        if let Some(client) = &mut self.client {
+            match client.request_files(self.peer_id, file_names).await {
+                Ok(_) => {
+                    tracing::info!("Download completed successfully");
+                    self.state = AppState::Download;
+                }
+                Err(e) => {
+                    tracing::error!("Failed to request files: {}", e);
+                    self.state = AppState::Download;
+                }
+            }
+        }
+
+        // Notify UI to refresh
+        if let Some(refresh_sender) = &self.refresh_sender {
+            let _ = refresh_sender.try_send(());
+        }
     }
 
     pub fn refresh_sender(&self) -> Option<&Sender<()>> {

@@ -46,7 +46,18 @@ pub fn render(frame: &mut Frame, app: &App) {
         .split(horizontal_chunks[0]);
 
     render_title(frame, left_chunks[0], app.is_host);
-    render_file_tree(frame, app, left_chunks[1]);
+
+    // Check for warning state first
+    if app.is_warning {
+        tracing::warn!("Warning: {}", app.warning_message);
+        let warning = Paragraph::new(app.warning_message.clone())
+            .block(Block::default().title("⚠️ Warning").borders(Borders::ALL))
+            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+        frame.render_widget(warning, left_chunks[1]);
+    } else {
+        render_file_tree(frame, app, left_chunks[1]);
+    }
+
     render_status(frame, app, left_chunks[2]);
     render_connect_info(frame, app, left_chunks[3]);
 
@@ -119,82 +130,106 @@ fn render_title(frame: &mut Frame, area: Rect, is_host: bool) {
 }
 
 fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .directory_items
-        .iter()
-        .map(|item| {
-            let indent = "  ".repeat(item.depth);
-            let selected = match app.state {
-                AppState::Share => {
-                    if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
-                        if app.items_to_share.contains(&rel_path.to_path_buf()) {
-                            "🔵 "
-                        } else {
-                            "  "
-                        }
-                    } else {
-                        "  "
-                    }
-                }
-                AppState::Download => {
-                    if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
-                        if app.items_to_download.contains(&rel_path.to_path_buf()) {
-                            "🔵 "
-                        } else {
-                            "  "
-                        }
-                    } else {
-                        "  "
-                    }
-                }
-                _ => "  ",
-            };
-            let prefix = if item.is_dir { "📁 " } else { "📄 " };
-
-            let style = if Some(item.index) == app.selected_index.or(Some(0)) {
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else if matches!(app.state, AppState::Share)
-                && app.items_to_share.contains(
-                    &item
-                        .path
-                        .strip_prefix(&app.current_path)
-                        .unwrap_or(&PathBuf::new())
-                        .to_path_buf(),
-                )
-                || matches!(app.state, AppState::Download)
-                    && app.items_to_download.contains(
-                        &item
-                            .path
-                            .strip_prefix(&app.current_path)
-                            .unwrap_or(&PathBuf::new())
-                            .to_path_buf(),
-                    )
-            {
-                Style::default().fg(Color::Green)
+    match &app.state {
+        AppState::Loading => {
+            let loading_text = "Downloading files...";
+            let loading = Paragraph::new(loading_text)
+                .block(Block::default().title("Status").borders(Borders::ALL))
+                .style(Style::default().fg(Color::Yellow));
+            frame.render_widget(loading, area);
+        }
+        _ => {
+            if app.is_warning {
+                let warning = Paragraph::new(app.warning_message.clone())
+                    .block(Block::default().title("Warning").borders(Borders::ALL))
+                    .style(Style::default().fg(Color::Red));
+                frame.render_widget(warning, area);
             } else {
-                Style::default()
-            };
+                let items: Vec<ListItem> = app
+                    .directory_items
+                    .iter()
+                    .map(|item| {
+                        let indent = "  ".repeat(item.depth);
+                        let selected =
+                            if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
+                                match app.state {
+                                    AppState::Share => {
+                                        if app.items_to_share.contains(&rel_path.to_path_buf()) {
+                                            "🔵 "
+                                        } else {
+                                            "  "
+                                        }
+                                    }
+                                    AppState::Download => {
+                                        let path_buf = PathBuf::from(&item.name);
+                                        if app.items_to_download.contains(&path_buf) {
+                                            "🔵 "
+                                        } else {
+                                            "  "
+                                        }
+                                    }
+                                    _ => "  ",
+                                }
+                            } else {
+                                match app.state {
+                                    AppState::Download => {
+                                        let path_buf = PathBuf::from(&item.name);
+                                        if app.items_to_download.contains(&path_buf) {
+                                            "🔵 "
+                                        } else {
+                                            "  "
+                                        }
+                                    }
+                                    _ => "  ",
+                                }
+                            };
+                        let prefix = if item.is_dir { "📁 " } else { "📄 " };
 
-            ListItem::new(Line::from(vec![
-                Span::raw(indent),
-                Span::styled(selected, style),
-                Span::styled(format!("{}{}", prefix, item.name), style),
-            ]))
-        })
-        .collect();
+                        let style = if Some(item.index) == app.selected_index.or(Some(0)) {
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD)
+                        } else if match app.state {
+                            AppState::Share => app.items_to_share.contains(
+                                &item
+                                    .path
+                                    .strip_prefix(&app.current_path)
+                                    .unwrap_or(&PathBuf::new())
+                                    .to_path_buf(),
+                            ),
+                            AppState::Download => {
+                                let path_buf = PathBuf::from(&item.name);
+                                let is_selected = app.items_to_download.contains(&path_buf);
+                                is_selected
+                            }
+                            _ => false,
+                        } {
+                            Style::default().fg(Color::Green)
+                        } else {
+                            Style::default()
+                        };
 
-    let current_path = format!(" {} ", app.current_path.display());
-    let files_list = List::new(items)
-        .block(Block::default().title(current_path).borders(Borders::ALL))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        );
+                        ListItem::new(Line::from(vec![
+                            Span::raw(indent),
+                            Span::styled(selected, style),
+                            Span::styled(format!("{}{}", prefix, item.name), style),
+                        ]))
+                    })
+                    .collect();
 
-    frame.render_widget(files_list, area);
+                let current_path = format!(" {} ", app.current_path.display());
+                let files_list = List::new(items)
+                    .block(Block::default().title(current_path).borders(Borders::ALL))
+                    .highlight_style(
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    );
+
+                frame.render_widget(files_list, area);
+            }
+        }
+    }
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
@@ -232,15 +267,19 @@ fn render_connect_info(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         app.listening_addrs
             .iter()
-            // .filter(|addr: &&libp2p::Multiaddr| !addr.to_string().contains("127.0.0"))
             .map(|addr| {
                 let addr_str = if addr.to_string().contains("/p2p/") {
                     addr.to_string()
                 } else {
                     format!("{}/p2p/{}", addr, app.peer_id)
                 };
+                let icon = if app.clipboard_success {
+                    "✅ " // Checkmark icon
+                } else {
+                    "📋 " // Clipboard icon
+                };
                 ListItem::new(Line::from(vec![
-                    Span::raw("📋 "), // Clipboard icon
+                    Span::raw(icon),
                     Span::styled(
                         addr_str,
                         Style::default()
