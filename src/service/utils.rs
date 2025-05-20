@@ -2,7 +2,6 @@ use crate::service::node::FileMetadata;
 use async_std::{io, path::PathBuf};
 use futures::{AsyncReadExt, AsyncWriteExt};
 use libp2p::Stream;
-use std::path::Path;
 use tokio::io::AsyncReadExt as _;
 
 pub struct FileTransfer {

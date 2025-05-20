@@ -18,7 +18,7 @@ anyhow = "1.0.95"
 async-std = "1.13.0"
 better-panic = "0.3"
 chrono = "0.4.39"
-crossbeam-channel = "0.5.14"
+crossbeam-channel = "0.5.15"
 clap = { version = "4.5.23", features = ["cargo"] }
 crossterm = "0.29.0"
 dirs-next = "2.0.0"
