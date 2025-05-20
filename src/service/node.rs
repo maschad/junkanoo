@@ -293,11 +293,10 @@ impl EventLoop {
                         let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
                         tokio::spawn(async move {
                             let mut receiver = FileReceiver::new();
-                            let file_name = format!("received_file_{}", peer);
 
-                            match receiver.receive_file(&mut stream, file_name.clone()).await {
-                                Ok(_) => {
-                                    tracing::info!("Successfully received file from peer {} as {}", peer, file_name);
+                            match receiver.receive_file(&mut stream).await {
+                                Ok(file_name) => {
+                                    tracing::info!("Successfully received file '{}' from peer {}", file_name, peer);
                                 }
                                 Err(e) => {
                                     tracing::error!("Failed to receive file from peer {}: {}", peer, e);
