@@ -378,13 +378,6 @@ async fn handle_network_events(
                     let _ = tx.try_send(());
                 }
             }
-            NetworkEvent::InboundRequest { request, channel } => {
-                let app = app.lock();
-                if let Some(tx) = app.refresh_sender() {
-                    let _ = tx.try_send(());
-                }
-            }
-            _ => {}
         }
     }
 }

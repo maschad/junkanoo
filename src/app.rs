@@ -1,4 +1,4 @@
-use crate::service::node::{Client, FileMetadata};
+use crate::service::node::Client;
 use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
