@@ -289,10 +289,11 @@ async fn start_network(
 
         client.dial(target_peer_id, target_peer_addr).await.unwrap();
 
-        // Update connected status
+        // Update connected status and peer ID
         {
             let mut app = app.lock();
             app.connected = true;
+            app.connected_peer_id = Some(target_peer_id); // Set the connected peer ID
         }
 
         // Add delay to allow connection to establish
@@ -371,7 +372,8 @@ async fn handle_network_events(
             NetworkEvent::PeerDisconnected() => {
                 let mut app = app.lock();
                 app.connected = false;
-                // Notify the UI to refresh
+                app.connected_peer_id = None; // Clear the connected peer ID
+                                              // Notify the UI to refresh
                 if let Some(tx) = app.refresh_sender() {
                     let _ = tx.try_send(());
                 }

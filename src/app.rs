@@ -15,6 +15,7 @@ pub struct App {
     pub current_path: PathBuf,
     pub connected: bool,
     pub peer_id: PeerId,
+    pub connected_peer_id: Option<PeerId>,
     pub listening_addrs: Vec<Multiaddr>,
     pub state: AppState,
     pub is_host: bool,
@@ -56,6 +57,7 @@ impl App {
             current_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
             connected: false,
             peer_id: PeerId::random(),
+            connected_peer_id: None,
             state: AppState::Share,
             is_host: true,
             listening_addrs: Vec::new(),
@@ -333,8 +335,17 @@ impl App {
 
     pub async fn start_download(&mut self) {
         if !self.connected {
-            panic!("Cannot start downloading - not connected to a peer");
+            tracing::error!("Cannot start downloading - not connected to a peer");
+            return;
         }
+
+        let peer_id = match self.connected_peer_id {
+            Some(id) => id,
+            None => {
+                tracing::error!("No peer ID available for download");
+                return;
+            }
+        };
 
         self.items_being_downloaded = self.items_to_download.clone();
         self.state = AppState::Loading;
@@ -350,7 +361,7 @@ impl App {
 
         // Request files from peer
         if let Some(client) = &mut self.client {
-            match client.request_files(self.peer_id, file_names).await {
+            match client.request_files(peer_id, file_names).await {
                 Ok(_) => {
                     tracing::info!("Download completed successfully");
                     self.state = AppState::Download;
