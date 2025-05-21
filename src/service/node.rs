@@ -371,7 +371,7 @@ impl EventLoop {
                     }
                 }
                 self.event_sender
-                    .send(Event::PeerConnected())
+                    .send(Event::PeerConnected(peer_id))
                     .await
                     .expect("Event receiver not to be dropped.");
             }
@@ -553,7 +553,7 @@ enum Command {
 #[derive(Debug)]
 pub(crate) enum Event {
     NewListenAddr(Multiaddr),
-    PeerConnected(),
+    PeerConnected(PeerId),
     PeerDisconnected(),
 }
 

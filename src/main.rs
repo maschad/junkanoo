@@ -289,13 +289,6 @@ async fn start_network(
 
         client.dial(target_peer_id, target_peer_addr).await.unwrap();
 
-        // Update connected status and peer ID
-        {
-            let mut app = app.lock();
-            app.connected = true;
-            app.connected_peer_id = Some(target_peer_id); // Set the connected peer ID
-        }
-
         // Add delay to allow connection to establish
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
@@ -361,9 +354,10 @@ async fn handle_network_events(
                     }
                 }
             }
-            NetworkEvent::PeerConnected() => {
+            NetworkEvent::PeerConnected(peer_id) => {
                 let mut app = app.lock();
                 app.connected = true;
+                app.connected_peer_id = Some(peer_id);
                 // Notify the UI to refresh
                 if let Some(tx) = app.refresh_sender() {
                     let _ = tx.try_send(());

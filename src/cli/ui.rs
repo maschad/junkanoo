@@ -242,7 +242,8 @@ fn render_status(frame: &mut Frame, app: &App, area: Rect) {
     let status = if app.connected {
         format!(
             "Connected to: {} | Selected items: {}",
-            app.peer_id, total_selected
+            app.connected_peer_id.unwrap().to_string(),
+            total_selected
         )
     } else {
         format!("Disconnected | Selected items: {}", total_selected)
