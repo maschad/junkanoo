@@ -371,7 +371,7 @@ impl EventLoop {
                     }
                 }
                 self.event_sender
-                    .send(Event::PeerConnected())
+                    .send(Event::PeerConnected(peer_id))
                     .await
                     .expect("Event receiver not to be dropped.");
             }
@@ -450,6 +450,7 @@ impl EventLoop {
 
                 let mut stream_control = self.swarm.behaviour().file_stream.new_control();
                 let file_names_clone = file_names.clone();
+                let mut event_sender = self.event_sender.clone();
 
                 tokio::spawn(async move {
                     tracing::info!("Initiating file transfer stream...");
@@ -473,16 +474,28 @@ impl EventLoop {
                                         "Successfully transferred file {:?}",
                                         file_names_clone[0]
                                     );
+                                    event_sender
+                                        .send(Event::DownloadCompleted(file_names_clone))
+                                        .await
+                                        .expect("Event receiver not to be dropped.");
                                     let _ = sender.send(Ok(Vec::new()));
                                 }
                                 Err(e) => {
                                     tracing::error!("Transfer failed with error: {}", e);
+                                    event_sender
+                                        .send(Event::DownloadFailed(file_names_clone))
+                                        .await
+                                        .expect("Event receiver not to be dropped.");
                                     let _ = sender.send(Err(Box::new(e) as Box<dyn Error + Send>));
                                 }
                             }
                         }
                         Err(e) => {
                             tracing::error!("Failed to open stream: {}", e);
+                            event_sender
+                                .send(Event::DownloadFailed(file_names_clone))
+                                .await
+                                .expect("Event receiver not to be dropped.");
                             let _ = sender.send(Err(Box::new(e) as Box<dyn Error + Send>));
                         }
                     }
@@ -553,8 +566,10 @@ enum Command {
 #[derive(Debug)]
 pub(crate) enum Event {
     NewListenAddr(Multiaddr),
-    PeerConnected(),
+    PeerConnected(PeerId),
     PeerDisconnected(),
+    DownloadCompleted(Vec<String>),
+    DownloadFailed(Vec<String>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
