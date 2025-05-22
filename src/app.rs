@@ -19,6 +19,7 @@ pub struct App {
     pub listening_addrs: Vec<Multiaddr>,
     pub state: AppState,
     pub is_host: bool,
+    pub is_loading: bool,
     pub items_to_share: HashSet<PathBuf>,
     pub items_being_shared: HashSet<PathBuf>,
     pub items_to_download: HashSet<PathBuf>,
@@ -45,7 +46,6 @@ pub struct DirectoryItem {
 pub enum AppState {
     Share,
     Download,
-    Loading,
 }
 
 impl App {
@@ -60,6 +60,7 @@ impl App {
             connected_peer_id: None,
             state: AppState::Share,
             is_host: true,
+            is_loading: false,
             listening_addrs: Vec::new(),
             items_to_share: HashSet::new(),
             items_being_shared: HashSet::new(),
@@ -109,7 +110,6 @@ impl App {
                 let selected = match self.state {
                     AppState::Share => self.items_to_share.contains(&path),
                     AppState::Download => self.items_to_download.contains(&path),
-                    _ => false,
                 };
 
                 self.directory_items.push(DirectoryItem {
@@ -200,7 +200,6 @@ impl App {
                         let items_set = match self.state {
                             AppState::Share => &mut self.items_to_share,
                             AppState::Download => &mut self.items_to_download,
-                            _ => unreachable!(),
                         };
 
                         if item.is_dir {
@@ -246,7 +245,6 @@ impl App {
                             let _ = refresh_sender.try_send(());
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -272,7 +270,6 @@ impl App {
                             self.items_to_download.remove(&path_buf);
                         }
                     }
-                    _ => {}
                 }
                 item.selected = false;
                 // Update the cached version
@@ -315,12 +312,11 @@ impl App {
                     }
                 }
             }
-            _ => {}
         }
     }
 
     pub fn disconnect(&mut self) {
-        if self.connected && !matches!(self.state, AppState::Loading) {
+        if self.connected && !self.is_loading {
             self.connected = false;
         }
     }
@@ -330,7 +326,6 @@ impl App {
             panic!("Cannot start sharing - not connected to a peer");
         }
         self.items_being_shared = self.items_to_share.clone();
-        self.state = AppState::Loading;
     }
 
     pub async fn start_download(&mut self) {
@@ -348,7 +343,6 @@ impl App {
         };
 
         self.items_being_downloaded = self.items_to_download.clone();
-        self.state = AppState::Loading;
 
         // Get the list of files to download
         let file_names: Vec<String> = self
@@ -364,11 +358,9 @@ impl App {
             match client.request_files(peer_id, file_names).await {
                 Ok(_) => {
                     tracing::info!("Download completed successfully");
-                    self.state = AppState::Download;
                 }
                 Err(e) => {
                     tracing::error!("Failed to request files: {}", e);
-                    self.state = AppState::Download;
                 }
             }
         }

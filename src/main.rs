@@ -221,19 +221,17 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                                     // Set a timer to reset the warning
                                     app.warning_timer = Some(std::time::Instant::now());
                                 } else {
+                                    app.is_loading = true;
                                     // Clone the app before dropping the lock
                                     let mut app_clone = app.clone();
-                                    // Keep the lock until we're done with the app
-                                    {
-                                        tracing::debug!(
-                                            "Starting download with {} items selected",
-                                            app.items_to_download.len()
-                                        );
-                                        // Start the download in a new task
-                                        tokio::spawn(async move {
-                                            app_clone.start_download().await;
-                                        });
-                                    }
+                                    tracing::debug!(
+                                        "Starting download with {} items selected",
+                                        app.items_to_download.len()
+                                    );
+                                    // Start the download in a new task
+                                    tokio::spawn(async move {
+                                        app_clone.start_download().await;
+                                    });
                                 }
                             }
                         }
@@ -368,6 +366,24 @@ async fn handle_network_events(
                 app.connected = false;
                 app.connected_peer_id = None; // Clear the connected peer ID
                                               // Notify the UI to refresh
+                if let Some(tx) = app.refresh_sender() {
+                    let _ = tx.try_send(());
+                }
+            }
+            NetworkEvent::DownloadCompleted(file_names) => {
+                tracing::info!("Download completed: {:?}", file_names);
+                let mut app = app.lock();
+                app.is_loading = false;
+                // Notify the UI to refresh
+                if let Some(tx) = app.refresh_sender() {
+                    let _ = tx.try_send(());
+                }
+            }
+            NetworkEvent::DownloadFailed(file_names) => {
+                tracing::error!("Download failed: {:?}", file_names);
+                let mut app = app.lock();
+                app.is_loading = false;
+                // Notify the UI to refresh
                 if let Some(tx) = app.refresh_sender() {
                     let _ = tx.try_send(());
                 }
