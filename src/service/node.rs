@@ -508,7 +508,10 @@ impl EventLoop {
                 sender,
             } => {
                 self.pending_directory_items
-                    .insert(peer_id, directory_items);
+                    .insert(peer_id, directory_items.clone());
+                tracing::debug!("Inserted directory items for peer {peer_id}");
+                tracing::debug!("Directory items: {:?}", directory_items);
+
                 let _ = sender.send(Ok(()));
             }
             Command::RequestDisplay { peer_id, sender } => {

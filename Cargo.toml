@@ -16,7 +16,6 @@ ratatui = "0.29.0"
 tokio = { version = "1.42.0", features = ["full"] }
 anyhow = "1.0.95"
 async-std = "1.13.0"
-better-panic = "0.3"
 chrono = "0.4.39"
 crossbeam-channel = "0.5.15"
 clap = { version = "4.5.23", features = ["cargo"] }
@@ -57,3 +56,4 @@ tracing-appender = "0.2.0"
 libp2p-stream = "0.2.0-alpha"
 arboard = "3.4.1"
 walkdir = "2.5.0"
+human-panic = { version = "2.0.2", features = ["color"] }

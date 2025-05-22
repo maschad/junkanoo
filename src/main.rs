@@ -12,6 +12,7 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use futures::{Stream, StreamExt};
+use human_panic::{setup_panic, Metadata};
 use libp2p::{multiaddr::Protocol, Multiaddr};
 use parking_lot::Mutex;
 use ratatui::{prelude::CrosstermBackend, Terminal};
@@ -27,7 +28,7 @@ mod service;
 
 #[tokio::main]
 async fn main() {
-    // Setup logger
+    setup_panic_handler();
     setup_logger();
 
     let matches = cli::commands::get_args().get_matches();
@@ -105,6 +106,15 @@ async fn main() {
     let mut terminal = setup_terminal();
     render_loop(&mut terminal, app_ui);
     cleanup_terminal();
+}
+
+fn setup_panic_handler() {
+    setup_panic!(
+        Metadata::new(env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"))
+        .authors("Chad Nehemiah <chad@nehemiah94@gmail.com>")
+        .homepage("https://maschad.codes")
+        .support("- Open a support request via GitHub Issues: https://github.com/maschad/junkanoo/issues")
+    );
 }
 
 fn setup_logger() {
