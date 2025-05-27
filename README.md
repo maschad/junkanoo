@@ -1,4 +1,4 @@
-# `junkanoo` -
+# `junkanoo`
 
 [![standard-readme compliant](https://img.shields.io/badge/readme%20style-standard-brightgreen.svg)](https://github.com/RichardLitt/standard-readme)
 [![Go Report Card](https://goreportcard.com/badge/github.com/dennis-tra/pcp)](https://goreportcard.com/report/github.com/dennis-tra/pcp)
@@ -6,7 +6,7 @@
 [![Latest test suite run result](https://github.com/dennis-tra/pcp/actions/workflows/tests.yml/badge.svg)](https://github.com/dennis-tra/pcp/actions)
 [![Github Releases Download Count](https://img.shields.io/github/downloads/dennis-tra/pcp/total.svg)]()
 
-A decentralized ephemeral file sharing CLI browser built with Rust and libp2p.
+A decentralized ephemeral file sharing TUI browser 📁 🔄 🔒
 
 ## Overview
 
@@ -27,6 +27,7 @@ Junkanoo enables secure, peer-to-peer file sharing through an encrypted channel.
 ### Using Homebrew (macOS)
 
 ```bash
+brew tap maschad/junkanoo
 brew install junkanoo
 ```
 
