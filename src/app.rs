@@ -87,6 +87,35 @@ impl App {
     }
 
     pub fn populate_directory_items(&mut self) {
+        // If in Download mode and directory_items are already set, filter to show only children of current_path
+        if self.state == AppState::Download && !self.directory_items.is_empty() {
+            let current = if self.current_path.as_os_str().is_empty() {
+                PathBuf::new()
+            } else {
+                self.current_path.clone()
+            };
+            let mut children: Vec<DirectoryItem> = self
+                .directory_items
+                .iter()
+                .filter(|item| {
+                    // The parent of the item's path should match current_path
+                    item.path.parent().unwrap_or(&PathBuf::new()) == current
+                })
+                .cloned()
+                .collect();
+            // Sort as before
+            children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+            });
+            self.directory_items = children;
+            if self.selected_index.is_none() && !self.directory_items.is_empty() {
+                self.selected_index = Some(0);
+            }
+            return;
+        }
+
         // Check if we have cached items for this directory
         if let Some(cached_items) = self.directory_cache.get(&self.current_path) {
             self.directory_items = cached_items.clone();
@@ -107,9 +136,72 @@ impl App {
                     .unwrap_or("")
                     .to_string();
                 let is_dir = path.is_dir();
+
+                // In share mode, only filter items if we have selected items and we're in a subdirectory
+                if self.state == AppState::Share && !self.items_to_share.is_empty() {
+                    // Get the root shared directory (the first selected directory)
+                    let root_shared_dir = self
+                        .items_to_share
+                        .iter()
+                        .filter(|path| path.is_dir())
+                        .next()
+                        .map(|path| self.current_path.join(path));
+
+                    // Only filter if we're in a subdirectory of the root shared directory
+                    if let Some(root_dir) = root_shared_dir {
+                        if self.current_path != root_dir && self.current_path.starts_with(&root_dir)
+                        {
+                            let should_show = if is_dir {
+                                // Show directory if it contains any selected items
+                                self.items_to_share.iter().any(|selected_path| {
+                                    let abs_selected = self.current_path.join(selected_path);
+                                    path.starts_with(&abs_selected)
+                                        || abs_selected.starts_with(&path)
+                                })
+                            } else {
+                                // Show file if it's selected
+                                let abs_path = path.clone();
+                                self.items_to_share.iter().any(|selected_path| {
+                                    let abs_selected = self.current_path.join(selected_path);
+                                    abs_path == abs_selected
+                                })
+                            };
+
+                            if !should_show {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 let selected = match self.state {
-                    AppState::Share => self.items_to_share.contains(&path),
-                    AppState::Download => self.items_to_download.contains(&path),
+                    AppState::Share => {
+                        // Check if this file/directory is selected using absolute paths
+                        let abs_path = path.clone();
+                        self.items_to_share.iter().any(|selected_path| {
+                            let abs_selected = self.current_path.join(selected_path);
+                            abs_path == abs_selected
+                        })
+                    }
+                    AppState::Download => {
+                        // In download mode, check if the file/directory is in the shared items
+                        let abs_path = path.clone();
+                        self.directory_items.iter().any(|item| {
+                            if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
+                                let abs_selected = self.current_path.join(rel_path);
+                                abs_path == abs_selected
+                            } else {
+                                false
+                            }
+                        })
+                    }
+                };
+
+                // Calculate the depth of the item relative to the current path
+                let depth = if let Ok(rel_path) = path.strip_prefix(&self.current_path) {
+                    rel_path.components().count()
+                } else {
+                    0
                 };
 
                 self.directory_items.push(DirectoryItem {
@@ -117,32 +209,42 @@ impl App {
                     path,
                     is_dir,
                     index,
-                    depth: 0,
+                    depth,
                     selected,
                 });
             }
 
-            // Sort directories first, then files
-            self.directory_items
-                .sort_by(|a, b| match (a.is_dir, b.is_dir) {
+            // Sort directories first, then files, and maintain directory structure
+            self.directory_items.sort_by(|a, b| {
+                match (a.is_dir, b.is_dir) {
                     (true, false) => std::cmp::Ordering::Less,
                     (false, true) => std::cmp::Ordering::Greater,
-                    _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                });
+                    _ => {
+                        // If both are directories or both are files, sort by depth first
+                        match a.depth.cmp(&b.depth) {
+                            std::cmp::Ordering::Equal => {
+                                // If same depth, sort alphabetically
+                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                            }
+                            other => other,
+                        }
+                    }
+                }
+            });
 
             // Update indices after sorting
             for (i, item) in self.directory_items.iter_mut().enumerate() {
                 item.index = i;
             }
 
+            // Cache the items
+            self.directory_cache
+                .insert(self.current_path.clone(), self.directory_items.clone());
+
             // Initialize selected_index if it's None
             if self.selected_index.is_none() && !self.directory_items.is_empty() {
                 self.selected_index = Some(0);
             }
-
-            // Cache the items for this directory
-            self.directory_cache
-                .insert(self.current_path.clone(), self.directory_items.clone());
         }
     }
 
@@ -186,9 +288,30 @@ impl App {
 
     pub fn go_up_previous_directory(&mut self) {
         if let Some(parent) = self.current_path.parent() {
-            self.current_path = parent.to_path_buf();
-            self.selected_index = None;
-            self.populate_directory_items();
+            // Check if we're in a shared directory
+            if self.state == AppState::Share {
+                // Get the root shared directory (the first selected directory)
+                if let Some(root_shared_dir) = self
+                    .items_to_share
+                    .iter()
+                    .filter(|path| path.is_dir())
+                    .next()
+                {
+                    // Only allow going up if we're not at or below the root shared directory
+                    if !self.current_path.starts_with(root_shared_dir) {
+                        self.current_path = parent.to_path_buf();
+                        self.populate_directory_items();
+                    }
+                } else {
+                    // If no directory is selected, allow normal navigation
+                    self.current_path = parent.to_path_buf();
+                    self.populate_directory_items();
+                }
+            } else {
+                // In download mode, allow normal navigation
+                self.current_path = parent.to_path_buf();
+                self.populate_directory_items();
+            }
         }
     }
 
