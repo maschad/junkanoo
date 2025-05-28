@@ -10,6 +10,7 @@ use walkdir;
 #[derive(Clone)]
 pub struct App {
     pub directory_items: Vec<DirectoryItem>,
+    pub all_shared_items: Vec<DirectoryItem>,
     pub directory_cache: HashMap<PathBuf, Vec<DirectoryItem>>,
     pub selected_index: Option<usize>,
     pub current_path: PathBuf,
@@ -52,6 +53,7 @@ impl App {
     pub fn new() -> Self {
         let mut app = App {
             directory_items: Vec::new(),
+            all_shared_items: Vec::new(),
             directory_cache: HashMap::new(),
             selected_index: None,
             current_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
@@ -87,20 +89,17 @@ impl App {
     }
 
     pub fn populate_directory_items(&mut self) {
-        // If in Download mode and directory_items are already set, filter to show only children of current_path
-        if self.state == AppState::Download && !self.directory_items.is_empty() {
+        // In Download mode, always filter from all_shared_items
+        if self.state == AppState::Download && !self.all_shared_items.is_empty() {
             let current = if self.current_path.as_os_str().is_empty() {
                 PathBuf::new()
             } else {
                 self.current_path.clone()
             };
             let mut children: Vec<DirectoryItem> = self
-                .directory_items
+                .all_shared_items
                 .iter()
-                .filter(|item| {
-                    // The parent of the item's path should match current_path
-                    item.path.parent().unwrap_or(&PathBuf::new()) == current
-                })
+                .filter(|item| item.path.parent().unwrap_or(&PathBuf::new()) == current)
                 .cloned()
                 .collect();
             // Sort as before
@@ -110,8 +109,10 @@ impl App {
                 _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             });
             self.directory_items = children;
-            if self.selected_index.is_none() && !self.directory_items.is_empty() {
+            if !self.directory_items.is_empty() {
                 self.selected_index = Some(0);
+            } else {
+                self.selected_index = None;
             }
             return;
         }

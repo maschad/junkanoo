@@ -323,6 +323,7 @@ async fn start_network(
                         }
                     }
                 });
+                app.all_shared_items = items.clone();
                 app.directory_items = items;
                 app.current_path = std::path::PathBuf::new();
                 app.populate_directory_items();
@@ -338,7 +339,7 @@ async fn start_network(
             let directory_items = {
                 let app = app.lock();
                 // Find the common parent (virtual root) of all selected items
-                let mut all_paths: Vec<_> = app.items_to_share.iter().cloned().collect();
+                let all_paths: Vec<_> = app.items_to_share.iter().cloned().collect();
                 if all_paths.is_empty() {
                     Vec::new()
                 } else {
