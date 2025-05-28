@@ -25,6 +25,7 @@ use tracing_subscriber::EnvFilter;
 mod app;
 mod cli;
 mod service;
+mod tests;
 
 #[tokio::main]
 async fn main() {
@@ -304,7 +305,28 @@ async fn start_network(
         match client.request_directory(target_peer_id).await {
             Ok(display_response) => {
                 let mut app = app.lock();
-                app.directory_items = display_response.items;
+                // Sort items by depth to maintain directory structure
+                let mut items = display_response.items;
+                items.sort_by(|a, b| {
+                    match (a.is_dir, b.is_dir) {
+                        (true, false) => std::cmp::Ordering::Less,
+                        (false, true) => std::cmp::Ordering::Greater,
+                        _ => {
+                            // If both are directories or both are files, sort by depth first
+                            match a.depth.cmp(&b.depth) {
+                                std::cmp::Ordering::Equal => {
+                                    // If same depth, sort alphabetically
+                                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                }
+                                other => other,
+                            }
+                        }
+                    }
+                });
+                app.all_shared_items = items.clone();
+                app.directory_items = items;
+                app.current_path = std::path::PathBuf::new();
+                app.populate_directory_items();
             }
             Err(e) => {
                 tracing::error!("Failed to request directory: {}", e);
@@ -316,18 +338,44 @@ async fn start_network(
         loop {
             let directory_items = {
                 let app = app.lock();
-                app.items_to_share
-                    .iter()
-                    .enumerate()
-                    .map(|(index, path)| DirectoryItem {
-                        name: path.file_name().unwrap().to_string_lossy().to_string(),
-                        path: path.clone(),
-                        is_dir: path.is_dir(),
-                        index,
-                        depth: 0,
-                        selected: true,
-                    })
-                    .collect()
+                // Find the common parent (virtual root) of all selected items
+                let all_paths: Vec<_> = app.items_to_share.iter().cloned().collect();
+                if all_paths.is_empty() {
+                    Vec::new()
+                } else {
+                    let mut virtual_root = all_paths[0].clone();
+                    for path in &all_paths[1..] {
+                        virtual_root = virtual_root
+                            .ancestors()
+                            .find(|ancestor| path.starts_with(ancestor))
+                            .unwrap_or(&virtual_root)
+                            .to_path_buf();
+                    }
+                    // Build DirectoryItems with paths relative to the virtual root
+                    all_paths
+                        .iter()
+                        .enumerate()
+                        .map(|(index, path)| {
+                            let rel_path = path.strip_prefix(&virtual_root).unwrap_or(path);
+                            let name = rel_path
+                                .file_name()
+                                .or_else(|| path.file_name())
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            let is_dir = path.is_dir();
+                            let depth = rel_path.components().count();
+                            DirectoryItem {
+                                name,
+                                path: rel_path.to_path_buf(),
+                                is_dir,
+                                index,
+                                depth,
+                                selected: true,
+                            }
+                        })
+                        .collect()
+                }
             };
 
             client

@@ -69,7 +69,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Right panel with preview
     let preview_block = Block::default().title(" Preview ").borders(Borders::ALL);
 
-    let preview_content = if let Some(index) = app.selected_index.or(Some(0)) {
+    let preview_content = if let Some(index) = app.selected_index {
         if let Some(item) = app.directory_items.get(index) {
             if !item.is_dir {
                 match std::fs::read_to_string(&item.path) {
@@ -77,21 +77,28 @@ pub fn render(frame: &mut Frame, app: &App) {
                     Err(_) => "Unable to read file contents".to_string(),
                 }
             } else {
-                let selected_count = app
-                    .items_to_share
+                // For directories, show a friendly message or list children
+                let children: Vec<_> = app
+                    .directory_items
                     .iter()
-                    .filter(|path| {
-                        path.starts_with(
-                            item.path
-                                .strip_prefix(&app.current_path)
-                                .unwrap_or(&PathBuf::new()),
+                    .filter(|child| child.path.parent().unwrap_or(&PathBuf::new()) == item.path)
+                    .map(|child| {
+                        format!(
+                            "{}{}",
+                            if child.is_dir { "/" } else { "" },
+                            child.name.clone()
                         )
                     })
-                    .count();
-                format!(
-                    "Directory: {} ({} items selected)",
-                    item.name, selected_count
-                )
+                    .collect();
+                if children.is_empty() {
+                    format!("Directory: {} (empty)", item.name)
+                } else {
+                    format!(
+                        "Directory: {}\nChildren:\n{}",
+                        item.name,
+                        children.join("\n")
+                    )
+                }
             }
         } else {
             "No file selected".to_string()
