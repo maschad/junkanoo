@@ -11,11 +11,11 @@ use libp2p::{
     tcp, yamux, PeerId, StreamProtocol, SwarmBuilder,
 };
 use libp2p_stream as stream;
-use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{hash_map, HashMap},
     error::Error,
+    sync::LazyLock,
     time::Duration,
 };
 use tokio::sync::Semaphore;
@@ -42,7 +42,7 @@ const JUNKANOO_FILE_PROTOCOL: StreamProtocol = StreamProtocol::new("/junkanoo/st
 
 // Limit concurrent transfers to prevent resource exhaustion
 // This can be tuned based on system capabilities and requirements
-static TRANSFER_SEMAPHORE: Lazy<Semaphore> = Lazy::new(|| Semaphore::new(4));
+static TRANSFER_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new(4));
 
 /// Creates the network components, namely:
 ///
