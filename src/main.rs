@@ -25,6 +25,7 @@ use tracing_subscriber::EnvFilter;
 mod app;
 mod cli;
 mod service;
+mod tests;
 
 #[tokio::main]
 async fn main() {

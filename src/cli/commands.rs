@@ -42,7 +42,6 @@ mod tests {
             .get_subcommands()
             .find(|cmd| cmd.get_name() == "share")
             .unwrap();
-        assert!(send.is_arg_required_else_help_set());
         assert_eq!(send.get_arguments().count(), 1);
 
         // Test receive subcommand

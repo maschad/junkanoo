@@ -42,7 +42,7 @@ pub struct DirectoryItem {
     pub selected: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AppState {
     Share,
     Download,
@@ -318,6 +318,7 @@ impl App {
     pub fn disconnect(&mut self) {
         if self.connected && !self.is_loading {
             self.connected = false;
+            self.connected_peer_id = None;
         }
     }
 
