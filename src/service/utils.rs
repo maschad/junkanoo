@@ -27,10 +27,10 @@ impl FileTransfer {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown_file");
         let file_name_bytes = file_name.as_bytes();
-        let name_len = file_name_bytes.len() as u32;
+        let name_len = u32::try_from(file_name_bytes.len());
 
         // Send the length of the filename first
-        stream.write_all(&name_len.to_be_bytes()).await?;
+        stream.write_all(&name_len.unwrap().to_be_bytes()).await?;
         // Then send the filename
         stream.write_all(file_name_bytes).await?;
 
@@ -56,7 +56,7 @@ pub struct FileReceiver {
 }
 
 impl FileReceiver {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             chunk_size: 1024 * 1024, // 1MB chunks
             progress: 0,
@@ -89,7 +89,7 @@ impl FileReceiver {
                 }
                 Err(e) => {
                     tracing::error!("Error reading from stream: {}", e);
-                    return Err(e.into());
+                    return Err(e);
                 }
             }
         }

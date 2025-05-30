@@ -1,6 +1,6 @@
 use std::{io::Stdout, sync::Arc};
 
-use app::{App, DirectoryItem};
+use app::{App, ConnectionState, DirectoryItem};
 use arboard::Clipboard;
 use cli::ui;
 use crossterm::{
@@ -13,10 +13,10 @@ use crossterm::{
 };
 use futures::{Stream, StreamExt};
 use human_panic::{setup_panic, Metadata};
-use libp2p::{multiaddr::Protocol, Multiaddr};
+use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
 use parking_lot::Mutex;
 use ratatui::{prelude::CrosstermBackend, Terminal};
-use service::node::Event as NetworkEvent;
+use service::node::{Client, Event as NetworkEvent};
 use tokio::spawn;
 use tracing::level_filters::LevelFilter;
 use tracing_appender::rolling;
@@ -44,10 +44,10 @@ async fn main() {
         Some(("share", sub_matches)) => {
             app.state = app::AppState::Share;
             app.is_host = true;
-            app.current_path = sub_matches
-                .get_one::<String>("FILE_PATH")
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+            app.current_path = sub_matches.get_one::<String>("FILE_PATH").map_or_else(
+                || std::env::current_dir().unwrap_or_default(),
+                std::path::PathBuf::from,
+            );
         }
         Some(("download", sub_matches)) => {
             app.state = app::AppState::Download;
@@ -73,9 +73,9 @@ async fn main() {
     }
 
     let app = Arc::new(Mutex::new(app));
-    let app_network = app.clone();
-    let app_ui = app.clone();
-    let app_ui_refresh = app_ui.clone();
+    let app_network = Arc::clone(&app);
+    let app_ui = Arc::clone(&app);
+    let app_ui_refresh = Arc::clone(&app_ui);
 
     // Set up refresh channel
     {
@@ -86,7 +86,7 @@ async fn main() {
 
         // Spawn a task to handle refresh notifications
         tokio::spawn(async move {
-            while let Some(_) = rx.recv().await {
+            while (rx.recv().await).is_some() {
                 // Force a UI refresh
                 if let Some(tx) = app_ui_refresh.lock().refresh_sender() {
                     let _ = tx.try_send(());
@@ -105,7 +105,7 @@ async fn main() {
 
     // Run UI in main thread
     let mut terminal = setup_terminal();
-    render_loop(&mut terminal, app_ui);
+    render_loop(&mut terminal, &app);
     cleanup_terminal();
 }
 
@@ -154,16 +154,14 @@ fn cleanup_terminal() {
         .expect("Failed to restore terminal");
 }
 
-fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex<App>>) {
+fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &Arc<Mutex<App>>) {
     loop {
         // Check warning timer before rendering
         {
             let mut app = app.lock();
-            if let Some(timer) = app.warning_timer {
-                if timer.elapsed() >= std::time::Duration::from_secs(2) {
-                    app.is_warning = false;
-                    app.warning_message = String::new();
-                    app.warning_timer = None;
+            if let Some(warning) = &app.warning {
+                if warning.timer.elapsed() >= std::time::Duration::from_secs(2) {
+                    app.clear_warning();
                     // Notify UI to refresh
                     if let Some(refresh_sender) = app.refresh_sender() {
                         let _ = refresh_sender.try_send(());
@@ -223,14 +221,11 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
                             } else {
                                 // Check if any files are selected before spawning the task
                                 if app.items_to_download.is_empty() {
-                                    app.is_warning = true;
-                                    app.warning_message = "No files selected for download. Please select files first.".to_string();
+                                    app.set_warning("No files selected for download. Please select files first.".to_string());
                                     // Notify UI to refresh
                                     if let Some(refresh_sender) = app.refresh_sender() {
                                         let _ = refresh_sender.try_send(());
                                     }
-                                    // Set a timer to reset the warning
-                                    app.warning_timer = Some(std::time::Instant::now());
                                 } else {
                                     app.is_loading = true;
                                     // Clone the app before dropping the lock
@@ -254,20 +249,115 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: Arc<Mutex
     }
 }
 
+async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<App>>) {
+    loop {
+        let directory_items = {
+            let app = app.lock();
+            let all_paths: Vec<_> = app.items_to_share.iter().cloned().collect();
+            drop(app); // Release the lock early
+
+            if all_paths.is_empty() {
+                Vec::new()
+            } else {
+                let mut virtual_root = all_paths[0].clone();
+                for path in &all_paths[1..] {
+                    virtual_root = virtual_root
+                        .ancestors()
+                        .find(|ancestor| path.starts_with(ancestor))
+                        .unwrap_or(&virtual_root)
+                        .to_path_buf();
+                }
+                all_paths
+                    .iter()
+                    .enumerate()
+                    .map(|(index, path)| {
+                        let rel_path = path.strip_prefix(&virtual_root).unwrap_or(path);
+                        let name = rel_path
+                            .file_name()
+                            .or_else(|| path.file_name())
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                            .to_string();
+                        let is_dir = path.is_dir();
+                        let depth = rel_path.components().count();
+                        DirectoryItem {
+                            name,
+                            path: rel_path.to_path_buf(),
+                            is_dir,
+                            index,
+                            depth,
+                            selected: true,
+                        }
+                    })
+                    .collect()
+            }
+        };
+
+        client
+            .insert_directory_items(peer_id, directory_items)
+            .await
+            .unwrap();
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+}
+
+async fn handle_download_mode(
+    client: &mut Client,
+    target_peer_addr: Multiaddr,
+    app: Arc<Mutex<App>>,
+) -> Result<(), &'static str> {
+    let target_peer_id = target_peer_addr
+        .iter()
+        .find_map(|p| match p {
+            Protocol::P2p(peer_id) => Some(peer_id),
+            _ => None,
+        })
+        .ok_or("Peer address must contain a peer ID component (/p2p/...)")?;
+
+    client.dial(target_peer_id, target_peer_addr).await.unwrap();
+    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+
+    match client.request_directory(target_peer_id).await {
+        Ok(display_response) => {
+            let mut items = display_response.items;
+            items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => match a.depth.cmp(&b.depth) {
+                    std::cmp::Ordering::Equal => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                    other => other,
+                },
+            });
+
+            {
+                let mut app = app.lock();
+                app.all_shared_items.clone_from(&items);
+                app.directory_items = items;
+                app.current_path = std::path::PathBuf::new();
+                app.populate_directory_items();
+            }
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("Failed to request directory: {}", e);
+            Err("Failed to request directory")
+        }
+    }
+}
+
 async fn start_network(
     app: Arc<Mutex<App>>,
     target_peer_addr: Option<Multiaddr>,
 ) -> Result<(), &'static str> {
-    let (mut client, event_stream, event_loop, peer_id) = service::node::new().await.unwrap();
+    let (mut client, event_stream, event_loop, peer_id) = service::node::new().unwrap();
 
-    // Scope the lock to just this operation
     {
         let mut app = app.lock();
         app.peer_id = peer_id;
         app.set_client(client.clone());
     }
 
-    // Spawn the network event handler
     spawn(event_loop.run());
     spawn(handle_network_events(event_stream, app.clone()));
 
@@ -277,118 +367,18 @@ async fn start_network(
         .expect("Listening not to fail.");
 
     let listening_addrs: Vec<Multiaddr> = client.get_listening_addrs().await.unwrap();
-
-    // Update listening addresses in a separate lock scope
     {
         let mut app = app.lock();
         app.listening_addrs = listening_addrs;
     }
 
-    // Handle non-host case
-    if !app.lock().is_host {
-        let target_peer_addr = target_peer_addr.ok_or("No peer address provided")?;
-
-        let target_peer_id = target_peer_addr
-            .iter()
-            .find_map(|p| match p {
-                Protocol::P2p(peer_id) => Some(peer_id),
-                _ => None,
-            })
-            .ok_or("Peer address must contain a peer ID component (/p2p/...)")?;
-
-        client.dial(target_peer_id, target_peer_addr).await.unwrap();
-
-        // Add delay to allow connection to establish
-        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
-
-        // Request directory
-        match client.request_directory(target_peer_id).await {
-            Ok(display_response) => {
-                let mut app = app.lock();
-                // Sort items by depth to maintain directory structure
-                let mut items = display_response.items;
-                items.sort_by(|a, b| {
-                    match (a.is_dir, b.is_dir) {
-                        (true, false) => std::cmp::Ordering::Less,
-                        (false, true) => std::cmp::Ordering::Greater,
-                        _ => {
-                            // If both are directories or both are files, sort by depth first
-                            match a.depth.cmp(&b.depth) {
-                                std::cmp::Ordering::Equal => {
-                                    // If same depth, sort alphabetically
-                                    a.name.to_lowercase().cmp(&b.name.to_lowercase())
-                                }
-                                other => other,
-                            }
-                        }
-                    }
-                });
-                app.all_shared_items = items.clone();
-                app.directory_items = items;
-                app.current_path = std::path::PathBuf::new();
-                app.populate_directory_items();
-            }
-            Err(e) => {
-                tracing::error!("Failed to request directory: {}", e);
-                return Err("Failed to request directory");
-            }
-        }
+    if app.lock().is_host {
+        handle_host_mode(&mut client, peer_id, app).await;
     } else {
-        // Watch for changes to items_to_share and update peer
-        loop {
-            let directory_items = {
-                let app = app.lock();
-                // Find the common parent (virtual root) of all selected items
-                let all_paths: Vec<_> = app.items_to_share.iter().cloned().collect();
-                if all_paths.is_empty() {
-                    Vec::new()
-                } else {
-                    let mut virtual_root = all_paths[0].clone();
-                    for path in &all_paths[1..] {
-                        virtual_root = virtual_root
-                            .ancestors()
-                            .find(|ancestor| path.starts_with(ancestor))
-                            .unwrap_or(&virtual_root)
-                            .to_path_buf();
-                    }
-                    // Build DirectoryItems with paths relative to the virtual root
-                    all_paths
-                        .iter()
-                        .enumerate()
-                        .map(|(index, path)| {
-                            let rel_path = path.strip_prefix(&virtual_root).unwrap_or(path);
-                            let name = rel_path
-                                .file_name()
-                                .or_else(|| path.file_name())
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
-                            let is_dir = path.is_dir();
-                            let depth = rel_path.components().count();
-                            DirectoryItem {
-                                name,
-                                path: rel_path.to_path_buf(),
-                                is_dir,
-                                index,
-                                depth,
-                                selected: true,
-                            }
-                        })
-                        .collect()
-                }
-            };
-
-            client
-                .insert_directory_items(peer_id, directory_items)
-                .await
-                .unwrap();
-
-            // Sleep briefly to avoid tight loop
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        }
+        let target_peer_addr = target_peer_addr.ok_or("No peer address provided")?;
+        handle_download_mode(&mut client, target_peer_addr, app).await?;
     }
 
-    // Keep the network running with minimal lock contention
     loop {
         tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
@@ -412,7 +402,7 @@ async fn handle_network_events(
             }
             NetworkEvent::PeerConnected(peer_id) => {
                 let mut app = app.lock();
-                app.connected = true;
+                app.connection_state = ConnectionState::Connected;
                 app.connected_peer_id = Some(peer_id);
                 // Notify the UI to refresh
                 if let Some(tx) = app.refresh_sender() {
@@ -421,9 +411,9 @@ async fn handle_network_events(
             }
             NetworkEvent::PeerDisconnected() => {
                 let mut app = app.lock();
-                app.connected = false;
-                app.connected_peer_id = None; // Clear the connected peer ID
-                                              // Notify the UI to refresh
+                app.connection_state = ConnectionState::Disconnected;
+                app.connected_peer_id = None;
+                // Notify the UI to refresh
                 if let Some(tx) = app.refresh_sender() {
                     let _ = tx.try_send(());
                 }

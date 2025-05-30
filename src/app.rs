@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
-use walkdir;
 
 #[derive(Clone)]
 pub struct App {
@@ -14,7 +13,7 @@ pub struct App {
     pub directory_cache: HashMap<PathBuf, Vec<DirectoryItem>>,
     pub selected_index: Option<usize>,
     pub current_path: PathBuf,
-    pub connected: bool,
+    pub connection_state: ConnectionState,
     pub peer_id: PeerId,
     pub connected_peer_id: Option<PeerId>,
     pub listening_addrs: Vec<Multiaddr>,
@@ -25,12 +24,10 @@ pub struct App {
     pub items_being_shared: HashSet<PathBuf>,
     pub items_to_download: HashSet<PathBuf>,
     pub items_being_downloaded: HashSet<PathBuf>,
-    pub clipboard_success: bool,
-    pub is_warning: bool,
-    pub warning_message: String,
-    pub warning_timer: Option<std::time::Instant>,
+    pub warning: Option<Warning>,
     pub refresh_sender: Option<Sender<()>>,
-    client: Option<Client>,
+    pub client: Option<Client>,
+    pub clipboard_success: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,15 +46,27 @@ pub enum AppState {
     Download,
 }
 
+#[derive(Clone, Debug)]
+pub struct Warning {
+    pub message: String,
+    pub timer: std::time::Instant,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ConnectionState {
+    Disconnected,
+    Connected,
+}
+
 impl App {
     pub fn new() -> Self {
-        let mut app = App {
+        let mut app = Self {
             directory_items: Vec::new(),
             all_shared_items: Vec::new(),
             directory_cache: HashMap::new(),
             selected_index: None,
             current_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
-            connected: false,
+            connection_state: ConnectionState::Disconnected,
             peer_id: PeerId::random(),
             connected_peer_id: None,
             state: AppState::Share,
@@ -68,12 +77,10 @@ impl App {
             items_being_shared: HashSet::new(),
             items_to_download: HashSet::new(),
             items_being_downloaded: HashSet::new(),
-            clipboard_success: false,
-            is_warning: false,
-            warning_message: String::new(),
-            warning_timer: None,
+            warning: None,
             refresh_sender: None,
             client: None,
+            clipboard_success: false,
         };
 
         // Populate directory items in both share and download modes
@@ -88,8 +95,7 @@ impl App {
         self.client = Some(client);
     }
 
-    pub fn populate_directory_items(&mut self) {
-        // In Download mode, always filter from all_shared_items
+    fn handle_download_mode(&mut self) -> bool {
         if self.state == AppState::Download && !self.all_shared_items.is_empty() {
             let current = if self.current_path.as_os_str().is_empty() {
                 PathBuf::new()
@@ -102,28 +108,74 @@ impl App {
                 .filter(|item| item.path.parent().unwrap_or(&PathBuf::new()) == current)
                 .cloned()
                 .collect();
-            // Sort as before
             children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
                 _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             });
             self.directory_items = children;
-            if !self.directory_items.is_empty() {
-                self.selected_index = Some(0);
-            } else {
+            if self.directory_items.is_empty() {
                 self.selected_index = None;
+            } else {
+                self.selected_index = Some(0);
             }
-            return;
+            true
+        } else {
+            false
         }
+    }
 
-        // Check if we have cached items for this directory
+    fn handle_cached_items(&mut self) -> bool {
         if let Some(cached_items) = self.directory_cache.get(&self.current_path) {
             self.directory_items = cached_items.clone();
-            // Initialize selected_index if it's None
             if self.selected_index.is_none() && !self.directory_items.is_empty() {
                 self.selected_index = Some(0);
             }
+            true
+        } else {
+            false
+        }
+    }
+
+    fn create_directory_item(
+        &self,
+        path: PathBuf,
+        name: String,
+        is_dir: bool,
+        index: usize,
+    ) -> DirectoryItem {
+        let selected = match self.state {
+            AppState::Share => self.items_to_share.iter().any(|selected_path| {
+                let abs_selected = self.current_path.join(selected_path);
+                path == abs_selected
+            }),
+            AppState::Download => self.directory_items.iter().any(|item| {
+                item.path
+                    .strip_prefix(&self.current_path)
+                    .is_ok_and(|rel_path| {
+                        let abs_selected = self.current_path.join(rel_path);
+                        path == abs_selected
+                    })
+            }),
+        };
+
+        let depth = path
+            .strip_prefix(&self.current_path)
+            .map(|rel_path| rel_path.components().count())
+            .unwrap_or(0);
+
+        DirectoryItem {
+            name,
+            path,
+            is_dir,
+            index,
+            depth,
+            selected,
+        }
+    }
+
+    pub fn populate_directory_items(&mut self) {
+        if self.handle_download_mode() || self.handle_cached_items() {
             return;
         }
 
@@ -138,118 +190,69 @@ impl App {
                     .to_string();
                 let is_dir = path.is_dir();
 
-                // In share mode, only filter items if we have selected items and we're in a subdirectory
-                if self.state == AppState::Share && !self.items_to_share.is_empty() {
-                    // Get the root shared directory (the first selected directory)
-                    let root_shared_dir = self
-                        .items_to_share
-                        .iter()
-                        .filter(|path| path.is_dir())
-                        .next()
-                        .map(|path| self.current_path.join(path));
-
-                    // Only filter if we're in a subdirectory of the root shared directory
-                    if let Some(root_dir) = root_shared_dir {
-                        if self.current_path != root_dir && self.current_path.starts_with(&root_dir)
-                        {
-                            let should_show = if is_dir {
-                                // Show directory if it contains any selected items
-                                self.items_to_share.iter().any(|selected_path| {
-                                    let abs_selected = self.current_path.join(selected_path);
-                                    path.starts_with(&abs_selected)
-                                        || abs_selected.starts_with(&path)
-                                })
-                            } else {
-                                // Show file if it's selected
-                                let abs_path = path.clone();
-                                self.items_to_share.iter().any(|selected_path| {
-                                    let abs_selected = self.current_path.join(selected_path);
-                                    abs_path == abs_selected
-                                })
-                            };
-
-                            if !should_show {
-                                continue;
-                            }
-                        }
-                    }
+                if self.should_show_item(&path, is_dir) {
+                    self.directory_items
+                        .push(self.create_directory_item(path, name, is_dir, index));
                 }
+            }
 
-                let selected = match self.state {
-                    AppState::Share => {
-                        // Check if this file/directory is selected using absolute paths
+            self.sort_and_cache_items();
+        }
+    }
+
+    fn should_show_item(&self, path: &PathBuf, is_dir: bool) -> bool {
+        if self.state == AppState::Share && !self.items_to_share.is_empty() {
+            if let Some(root_dir) = self.get_root_shared_dir() {
+                if self.current_path != root_dir && self.current_path.starts_with(&root_dir) {
+                    return if is_dir {
+                        self.items_to_share.iter().any(|selected_path| {
+                            let abs_selected = self.current_path.join(selected_path);
+                            path.starts_with(&abs_selected) || abs_selected.starts_with(path)
+                        })
+                    } else {
                         let abs_path = path.clone();
                         self.items_to_share.iter().any(|selected_path| {
                             let abs_selected = self.current_path.join(selected_path);
                             abs_path == abs_selected
                         })
-                    }
-                    AppState::Download => {
-                        // In download mode, check if the file/directory is in the shared items
-                        let abs_path = path.clone();
-                        self.directory_items.iter().any(|item| {
-                            if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                                let abs_selected = self.current_path.join(rel_path);
-                                abs_path == abs_selected
-                            } else {
-                                false
-                            }
-                        })
-                    }
-                };
-
-                // Calculate the depth of the item relative to the current path
-                let depth = if let Ok(rel_path) = path.strip_prefix(&self.current_path) {
-                    rel_path.components().count()
-                } else {
-                    0
-                };
-
-                self.directory_items.push(DirectoryItem {
-                    name,
-                    path,
-                    is_dir,
-                    index,
-                    depth,
-                    selected,
-                });
-            }
-
-            // Sort directories first, then files, and maintain directory structure
-            self.directory_items.sort_by(|a, b| {
-                match (a.is_dir, b.is_dir) {
-                    (true, false) => std::cmp::Ordering::Less,
-                    (false, true) => std::cmp::Ordering::Greater,
-                    _ => {
-                        // If both are directories or both are files, sort by depth first
-                        match a.depth.cmp(&b.depth) {
-                            std::cmp::Ordering::Equal => {
-                                // If same depth, sort alphabetically
-                                a.name.to_lowercase().cmp(&b.name.to_lowercase())
-                            }
-                            other => other,
-                        }
-                    }
+                    };
                 }
+            }
+        }
+        true
+    }
+
+    fn get_root_shared_dir(&self) -> Option<PathBuf> {
+        self.items_to_share
+            .iter()
+            .find(|path| path.is_dir())
+            .map(|path| self.current_path.join(path))
+    }
+
+    fn sort_and_cache_items(&mut self) {
+        self.directory_items
+            .sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => match a.depth.cmp(&b.depth) {
+                    std::cmp::Ordering::Equal => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+                    other => other,
+                },
             });
 
-            // Update indices after sorting
-            for (i, item) in self.directory_items.iter_mut().enumerate() {
-                item.index = i;
-            }
+        for (i, item) in self.directory_items.iter_mut().enumerate() {
+            item.index = i;
+        }
 
-            // Cache the items
-            self.directory_cache
-                .insert(self.current_path.clone(), self.directory_items.clone());
+        self.directory_cache
+            .insert(self.current_path.clone(), self.directory_items.clone());
 
-            // Initialize selected_index if it's None
-            if self.selected_index.is_none() && !self.directory_items.is_empty() {
-                self.selected_index = Some(0);
-            }
+        if self.selected_index.is_none() && !self.directory_items.is_empty() {
+            self.selected_index = Some(0);
         }
     }
 
-    pub fn navigate_next_file(&mut self) {
+    pub const fn navigate_next_file(&mut self) {
         if self.directory_items.is_empty() {
             return;
         }
@@ -261,7 +264,7 @@ impl App {
         };
     }
 
-    pub fn navigate_previous_file(&mut self) {
+    pub const fn navigate_previous_file(&mut self) {
         if self.directory_items.is_empty() {
             return;
         }
@@ -292,11 +295,7 @@ impl App {
             // Check if we're in a shared directory
             if self.state == AppState::Share {
                 // Get the root shared directory (the first selected directory)
-                if let Some(root_shared_dir) = self
-                    .items_to_share
-                    .iter()
-                    .filter(|path| path.is_dir())
-                    .next()
+                if let Some(root_shared_dir) = self.items_to_share.iter().find(|path| path.is_dir())
                 {
                     // Only allow going up if we're not at or below the root shared directory
                     if !self.current_path.starts_with(root_shared_dir) {
@@ -330,30 +329,27 @@ impl App {
                             // Add the directory itself with its relative path
                             if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
                                 let path_buf = rel_path.to_path_buf();
-                                items_set.insert(path_buf.clone());
+                                items_set.insert(path_buf);
 
                                 // Add all files and subdirectories with their relative paths
                                 for entry in walkdir::WalkDir::new(&item.path)
                                     .into_iter()
-                                    .filter_map(|e| e.ok())
+                                    .filter_map(std::result::Result::ok)
                                 {
                                     if let Ok(entry_rel_path) =
                                         entry.path().strip_prefix(&self.current_path)
                                     {
-                                        let path_buf = entry_rel_path.to_path_buf();
-                                        items_set.insert(path_buf.clone());
+                                        items_set.insert(entry_rel_path.to_path_buf());
                                     }
                                 }
                             }
                         } else {
                             // For single files, store relative to current directory
                             if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                                let path_buf = rel_path.to_path_buf();
-                                items_set.insert(path_buf.clone());
+                                items_set.insert(rel_path.to_path_buf());
                             } else {
                                 // If we can't strip the prefix, just use the filename
-                                let path_buf = PathBuf::from(&item.name);
-                                items_set.insert(path_buf.clone());
+                                items_set.insert(PathBuf::from(&item.name));
                             }
                         }
                         item.selected = true;
@@ -414,7 +410,7 @@ impl App {
         match self.state {
             AppState::Share => {
                 self.items_to_share.clear();
-                for item in self.directory_items.iter_mut() {
+                for item in &mut self.directory_items {
                     item.selected = false;
                 }
                 // Update cache
@@ -426,7 +422,7 @@ impl App {
             }
             AppState::Download => {
                 self.items_to_download.clear();
-                for item in self.directory_items.iter_mut() {
+                for item in &mut self.directory_items {
                     item.selected = false;
                 }
                 // Update cache
@@ -439,37 +435,35 @@ impl App {
         }
     }
 
-    pub fn disconnect(&mut self) {
-        if self.connected && !self.is_loading {
-            self.connected = false;
+    pub const fn disconnect(&mut self) {
+        if self.is_connected() && !self.is_loading() {
+            self.connection_state = ConnectionState::Disconnected;
             self.connected_peer_id = None;
         }
     }
 
     pub fn start_share(&mut self) {
-        if !self.connected {
-            panic!("Cannot start sharing - not connected to a peer");
-        }
+        assert!(
+            self.is_connected(),
+            "Cannot start sharing - not connected to a peer"
+        );
         self.items_being_shared = self.items_to_share.clone();
     }
 
     pub async fn start_download(&mut self) {
-        if !self.connected {
+        if !self.is_connected() {
             tracing::error!("Cannot start downloading - not connected to a peer");
             return;
         }
 
-        let peer_id = match self.connected_peer_id {
-            Some(id) => id,
-            None => {
-                tracing::error!("No peer ID available for download");
-                return;
-            }
+        let Some(peer_id) = self.connected_peer_id else {
+            tracing::error!("No peer ID available for download");
+            return;
         };
 
-        self.items_being_downloaded = self.items_to_download.clone();
+        self.items_being_downloaded
+            .clone_from(&self.items_to_download);
 
-        // Get the list of files to download
         let file_names: Vec<String> = self
             .items_to_download
             .iter()
@@ -478,7 +472,6 @@ impl App {
 
         tracing::info!("Starting download of files: {:?}", file_names);
 
-        // Request files from peer
         if let Some(client) = &mut self.client {
             match client.request_files(peer_id, file_names).await {
                 Ok(_) => {
@@ -490,13 +483,39 @@ impl App {
             }
         }
 
-        // Notify UI to refresh
         if let Some(refresh_sender) = &self.refresh_sender {
             let _ = refresh_sender.try_send(());
         }
     }
 
-    pub fn refresh_sender(&self) -> Option<&Sender<()>> {
+    pub const fn refresh_sender(&self) -> Option<&Sender<()>> {
         self.refresh_sender.as_ref()
+    }
+
+    pub const fn is_connected(&self) -> bool {
+        matches!(self.connection_state, ConnectionState::Connected)
+    }
+
+    pub const fn is_loading(&self) -> bool {
+        self.is_loading
+    }
+
+    pub const fn is_warning(&self) -> bool {
+        self.warning.is_some()
+    }
+
+    pub fn warning_message(&self) -> &str {
+        self.warning.as_ref().map_or("", |w| &w.message)
+    }
+
+    pub fn set_warning(&mut self, message: String) {
+        self.warning = Some(Warning {
+            message,
+            timer: std::time::Instant::now(),
+        });
+    }
+
+    pub fn clear_warning(&mut self) {
+        self.warning = None;
     }
 }

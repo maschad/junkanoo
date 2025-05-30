@@ -1,6 +1,7 @@
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
-    use crate::app::{App, AppState};
+    use crate::app::{App, AppState, ConnectionState};
     use libp2p::PeerId;
     use std::fs::{self, File};
     use std::io::Write;
@@ -36,15 +37,13 @@ mod tests {
         app.items_to_download.clear();
         app.items_being_shared.clear();
         app.items_being_downloaded.clear();
-        app.connected = false;
+        app.connection_state = ConnectionState::Disconnected;
         app.connected_peer_id = None;
         app.directory_items.clear();
         app.directory_cache.clear();
         app.selected_index = None;
         app.is_loading = false;
-        app.is_warning = false;
-        app.warning_message.clear();
-        app.warning_timer = None;
+        app.clear_warning();
         app.clipboard_success = false;
         app
     }
@@ -54,7 +53,7 @@ mod tests {
         let app = create_test_app();
         assert_eq!(app.state, AppState::Share);
         assert!(app.is_host);
-        assert!(!app.connected);
+        assert!(!app.is_connected());
         assert!(app.items_to_share.is_empty());
         assert!(app.items_to_download.is_empty());
     }
@@ -162,13 +161,10 @@ mod tests {
         let mut app = create_test_app();
 
         // Test warning state
-        app.is_warning = true;
-        app.warning_message = "Test warning".to_string();
-        app.warning_timer = Some(std::time::Instant::now());
+        app.set_warning("Test warning".to_string());
 
-        assert!(app.is_warning);
-        assert_eq!(app.warning_message, "Test warning");
-        assert!(app.warning_timer.is_some());
+        assert!(app.is_warning());
+        assert_eq!(app.warning_message(), "Test warning");
     }
 
     #[test]
@@ -177,19 +173,19 @@ mod tests {
         let peer_id = PeerId::random();
 
         // Test initial state
-        assert!(!app.connected);
+        assert!(!app.is_connected());
         assert!(app.connected_peer_id.is_none());
 
         // Test connection
-        app.connected = true;
+        app.connection_state = ConnectionState::Connected;
         app.connected_peer_id = Some(peer_id);
-        assert!(app.connected);
+        assert!(app.is_connected());
         assert_eq!(app.connected_peer_id, Some(peer_id));
 
         // Test disconnection
         app.is_loading = false;
         app.disconnect();
-        assert!(!app.connected);
+        assert!(!app.is_connected());
         assert!(app.connected_peer_id.is_none());
     }
 

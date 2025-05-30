@@ -1,5 +1,6 @@
 use clap::{arg, Command};
 
+#[allow(clippy::cognitive_complexity)]
 pub fn get_args() -> Command {
     Command::new("junkanoo")
         .version(env!("CARGO_PKG_VERSION"))

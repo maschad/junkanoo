@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, Paragraph},
@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame, app: &App) {
         .title(format!(
             "{} File Browser - PeerID: {}",
             if app.is_host { "Host" } else { "Remote" },
-            app.peer_id.to_string()
+            app.peer_id
         ))
         .borders(Borders::ALL);
     frame.render_widget(main_block, frame.area());
@@ -53,11 +53,11 @@ pub fn render(frame: &mut Frame, app: &App) {
             .block(Block::default().title("Loading...").borders(Borders::ALL))
             .style(Style::default().fg(Color::Yellow));
         frame.render_widget(loading, left_chunks[1]);
-    } else if app.is_warning {
-        tracing::warn!("Warning: {}", app.warning_message);
-        let warning = Paragraph::new(app.warning_message.clone())
-            .block(Block::default().title("⚠️ Warning").borders(Borders::ALL))
-            .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+    } else if app.is_warning() {
+        tracing::warn!("Warning: {}", app.warning_message());
+        let warning = Paragraph::new(app.warning_message().to_string())
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center);
         frame.render_widget(warning, left_chunks[1]);
     } else {
         render_file_tree(frame, app, left_chunks[1]);
@@ -69,43 +69,41 @@ pub fn render(frame: &mut Frame, app: &App) {
     // Right panel with preview
     let preview_block = Block::default().title(" Preview ").borders(Borders::ALL);
 
-    let preview_content = if let Some(index) = app.selected_index {
-        if let Some(item) = app.directory_items.get(index) {
-            if !item.is_dir {
-                match std::fs::read_to_string(&item.path) {
-                    Ok(contents) => contents,
-                    Err(_) => "Unable to read file contents".to_string(),
-                }
-            } else {
-                // For directories, show a friendly message or list children
-                let children: Vec<_> = app
-                    .directory_items
-                    .iter()
-                    .filter(|child| child.path.parent().unwrap_or(&PathBuf::new()) == item.path)
-                    .map(|child| {
+    let preview_content = app
+        .selected_index
+        .and_then(|index| app.directory_items.get(index))
+        .map_or_else(
+            || "No file selected".to_string(),
+            |item| {
+                if item.is_dir {
+                    // For directories, show a friendly message or list children
+                    let children: Vec<_> = app
+                        .directory_items
+                        .iter()
+                        .filter(|child| child.path.parent().unwrap_or(&PathBuf::new()) == item.path)
+                        .map(|child| {
+                            format!(
+                                "{}{}",
+                                if child.is_dir { "/" } else { "" },
+                                child.name.clone()
+                            )
+                        })
+                        .collect();
+                    if children.is_empty() {
+                        format!("Directory: {} (empty)", item.name)
+                    } else {
                         format!(
-                            "{}{}",
-                            if child.is_dir { "/" } else { "" },
-                            child.name.clone()
+                            "Directory: {}\nChildren:\n{}",
+                            item.name,
+                            children.join("\n")
                         )
-                    })
-                    .collect();
-                if children.is_empty() {
-                    format!("Directory: {} (empty)", item.name)
+                    }
                 } else {
-                    format!(
-                        "Directory: {}\nChildren:\n{}",
-                        item.name,
-                        children.join("\n")
-                    )
+                    std::fs::read_to_string(&item.path)
+                        .unwrap_or_else(|_| "Unable to read file contents".to_string())
                 }
-            }
-        } else {
-            "No file selected".to_string()
-        }
-    } else {
-        "No file selected".to_string()
-    };
+            },
+        );
 
     let preview = Paragraph::new(preview_content)
         .block(preview_block)
@@ -148,10 +146,10 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
             .block(Block::default().title("Status").borders(Borders::ALL))
             .style(Style::default().fg(Color::Yellow));
         frame.render_widget(loading, area);
-    } else if app.is_warning {
-        let warning = Paragraph::new(app.warning_message.clone())
-            .block(Block::default().title("Warning").borders(Borders::ALL))
-            .style(Style::default().fg(Color::Red));
+    } else if app.is_warning() {
+        let warning = Paragraph::new(app.warning_message().to_string())
+            .style(Style::default().fg(Color::Yellow))
+            .alignment(Alignment::Center);
         frame.render_widget(warning, area);
     } else {
         let items: Vec<ListItem> = app
@@ -159,8 +157,19 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
             .iter()
             .map(|item| {
                 let indent = "  ".repeat(item.depth);
-                let selected = if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
-                    match app.state {
+                let selected = item.path.strip_prefix(&app.current_path).map_or_else(
+                    |_| match app.state {
+                        AppState::Download => {
+                            let path_buf = PathBuf::from(&item.name);
+                            if app.items_to_download.contains(&path_buf) {
+                                "🔵 "
+                            } else {
+                                "  "
+                            }
+                        }
+                        AppState::Share => "  ",
+                    },
+                    |rel_path| match app.state {
                         AppState::Share => {
                             if app.items_to_share.contains(&rel_path.to_path_buf()) {
                                 "🔵 "
@@ -176,20 +185,8 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
                                 "  "
                             }
                         }
-                    }
-                } else {
-                    match app.state {
-                        AppState::Download => {
-                            let path_buf = PathBuf::from(&item.name);
-                            if app.items_to_download.contains(&path_buf) {
-                                "🔵 "
-                            } else {
-                                "  "
-                            }
-                        }
-                        _ => "  ",
-                    }
-                };
+                    },
+                );
                 let prefix = if item.is_dir { "📁 " } else { "📄 " };
 
                 let style = if Some(item.index) == app.selected_index.or(Some(0)) {
@@ -206,8 +203,7 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
                     ),
                     AppState::Download => {
                         let path_buf = PathBuf::from(&item.name);
-                        let is_selected = app.items_to_download.contains(&path_buf);
-                        is_selected
+                        app.items_to_download.contains(&path_buf)
                     }
                 } {
                     Style::default().fg(Color::Green)
@@ -237,22 +233,22 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status(frame: &mut Frame, app: &App, area: Rect) {
-    let total_selected = match app.state {
-        AppState::Share => app.items_to_share.len(),
-        AppState::Download => app.items_to_download.len(),
-    };
+    // Calculate total selected items
+    let total_selected = app.items_to_share.len() + app.items_to_download.len();
 
-    let status = if app.connected {
+    // Create status bar
+    let status = if app.is_connected() {
         format!(
-            "Connected to: {} | Selected items: {}",
-            app.connected_peer_id.unwrap().to_string(),
+            "Connected to peer: {} | Selected items: {}",
+            app.connected_peer_id
+                .map_or("Unknown".to_string(), |id| id.to_string()),
             total_selected
         )
     } else {
-        format!("Disconnected | Selected items: {}", total_selected)
+        format!("Disconnected | Selected items: {total_selected}")
     };
 
-    let status_style = if app.connected {
+    let status_style = if app.is_connected() {
         Style::default().fg(Color::Green)
     } else {
         Style::default().fg(Color::Red)
