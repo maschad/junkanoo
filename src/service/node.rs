@@ -51,8 +51,7 @@ static TRANSFER_SEMAPHORE: LazyLock<Semaphore> = LazyLock::new(|| Semaphore::new
 /// - The network event stream, e.g. for incoming requests.
 ///
 /// - The network task driving the network itself.
-pub(crate) async fn new(
-) -> Result<(Client, impl Stream<Item = Event>, EventLoop, PeerId), Box<dyn Error>> {
+pub fn new() -> Result<(Client, impl Stream<Item = Event>, EventLoop, PeerId), Box<dyn Error>> {
     // Create a public/private key pair, either random or based on a seed.
     // let id_keys = Keypair::generate_ed25519();
     // let peer_id = id_keys.public().to_peer_id();
@@ -126,7 +125,7 @@ pub(crate) async fn new(
 }
 
 #[derive(Clone)]
-pub(crate) struct Client {
+pub struct Client {
     sender: mpsc::Sender<Command>,
 }
 
@@ -223,15 +222,18 @@ impl Client {
     }
 }
 
-pub(crate) struct EventLoop {
+// Add these type aliases before the EventLoop struct
+type PendingDialSender = oneshot::Sender<Result<(), Box<dyn Error + Send>>>;
+type PendingFileSender = oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send>>>;
+type PendingDisplaySender = oneshot::Sender<Result<DisplayResponse, Box<dyn Error + Send>>>;
+
+pub struct EventLoop {
     swarm: Swarm<Behaviour>,
     command_receiver: mpsc::Receiver<Command>,
     event_sender: mpsc::Sender<Event>,
-    pending_dial: HashMap<PeerId, oneshot::Sender<Result<(), Box<dyn Error + Send>>>>,
-    pending_request_file:
-        HashMap<OutboundRequestId, oneshot::Sender<Result<Vec<u8>, Box<dyn Error + Send>>>>,
-    pending_request_display:
-        HashMap<OutboundRequestId, oneshot::Sender<Result<DisplayResponse, Box<dyn Error + Send>>>>,
+    pending_dial: HashMap<PeerId, PendingDialSender>,
+    pending_request_file: HashMap<OutboundRequestId, PendingFileSender>,
+    pending_request_display: HashMap<OutboundRequestId, PendingDisplaySender>,
     pending_directory_items: HashMap<PeerId, Vec<DirectoryItem>>,
     incoming_streams: stream::IncomingStreams,
 }
@@ -247,10 +249,10 @@ impl EventLoop {
             swarm,
             command_receiver,
             event_sender,
-            pending_dial: Default::default(),
-            pending_request_file: Default::default(),
-            pending_request_display: Default::default(),
-            pending_directory_items: Default::default(),
+            pending_dial: HashMap::default(),
+            pending_request_file: HashMap::default(),
+            pending_request_display: HashMap::default(),
+            pending_directory_items: HashMap::default(),
             incoming_streams,
         }
     }
@@ -260,7 +262,7 @@ impl EventLoop {
             tokio::select! {
                 event = self.swarm.select_next_some() => self.handle_event(event).await,
                 command = self.command_receiver.next() => match command {
-                    Some(c) => self.handle_command(c).await,
+                    Some(c) => self.handle_command(c),
                     // Command channel closed, thus shutting down the network event loop.
                     None=>  return,
                 },
@@ -347,19 +349,6 @@ impl EventLoop {
                     tracing::warn!("Received failure for unknown request ID: {:?}", request_id);
                 }
             }
-            SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
-                request_response::Event::ResponseSent { .. },
-            )) => {}
-            SwarmEvent::Behaviour(BehaviourEvent::RequestResponse(
-                request_response::Event::InboundFailure {
-                    peer,
-                    request_id,
-                    error,
-                },
-            )) => {
-                tracing::debug!("Inbound failure: {peer} {request_id} {error}");
-            }
-            SwarmEvent::IncomingConnection { .. } => {}
             SwarmEvent::ConnectionEstablished {
                 peer_id, endpoint, ..
             } => {
@@ -403,7 +392,8 @@ impl EventLoop {
         }
     }
 
-    async fn handle_command(&mut self, command: Command) {
+    #[allow(clippy::too_many_lines)]
+    fn handle_command(&mut self, command: Command) {
         match command {
             Command::StartListening { addr, sender } => {
                 let _ = match self.swarm.listen_on(addr) {
@@ -429,8 +419,6 @@ impl EventLoop {
                             let _ = sender.send(Err(Box::new(e)));
                         }
                     }
-                } else {
-                    todo!("Already dialing peer.");
                 }
             }
             Command::RequestFiles {
@@ -438,7 +426,6 @@ impl EventLoop {
                 file_names,
                 sender,
             } => {
-                tracing::info!("Starting file request for files: {:?}", file_names);
                 let request_id = self
                     .swarm
                     .behaviour_mut()
@@ -449,31 +436,23 @@ impl EventLoop {
                 self.pending_request_file.remove(&request_id);
 
                 let mut stream_control = self.swarm.behaviour().file_stream.new_control();
-                let file_names_clone = file_names.clone();
+                let file_names_clone = file_names;
                 let mut event_sender = self.event_sender.clone();
 
                 tokio::spawn(async move {
-                    tracing::info!("Initiating file transfer stream...");
-
                     // Open a new stream to the peer instead of waiting for an incoming stream
                     match stream_control
                         .open_stream(peer_id, JUNKANOO_FILE_PROTOCOL)
                         .await
                     {
                         Ok(mut stream) => {
-                            tracing::info!("File transfer stream opened to peer {}", peer_id);
                             let mut transfer = FileTransfer::new(FileMetadata {
                                 path: file_names_clone[0].clone(),
                                 size: 0,
                                 chunks: 0,
                             });
-                            tracing::info!("Starting file transfer for {:?}", file_names_clone[0]);
                             match transfer.stream_file(&mut stream).await {
-                                Ok(_) => {
-                                    tracing::info!(
-                                        "Successfully transferred file {:?}",
-                                        file_names_clone[0]
-                                    );
+                                Ok(()) => {
                                     event_sender
                                         .send(Event::DownloadCompleted(file_names_clone))
                                         .await
@@ -499,7 +478,6 @@ impl EventLoop {
                             let _ = sender.send(Err(Box::new(e) as Box<dyn Error + Send>));
                         }
                     }
-                    tracing::info!("File transfer process completed");
                 });
             }
             Command::InsertDirectoryItems {
@@ -508,9 +486,7 @@ impl EventLoop {
                 sender,
             } => {
                 self.pending_directory_items
-                    .insert(peer_id, directory_items.clone());
-                tracing::debug!("Inserted directory items for peer {peer_id}");
-                tracing::debug!("Directory items: {:?}", directory_items);
+                    .insert(peer_id, directory_items);
 
                 let _ = sender.send(Ok(()));
             }
@@ -567,7 +543,7 @@ enum Command {
 }
 
 #[derive(Debug)]
-pub(crate) enum Event {
+pub enum Event {
     NewListenAddr(Multiaddr),
     PeerConnected(PeerId),
     PeerDisconnected(),
@@ -576,7 +552,7 @@ pub(crate) enum Event {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DisplayRequest;
+pub struct DisplayRequest;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 enum FileResponse {
@@ -585,13 +561,13 @@ enum FileResponse {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct DisplayResponse {
+pub struct DisplayResponse {
     #[serde(default)]
     pub items: Vec<DirectoryItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FileMetadata {
+pub struct FileMetadata {
     pub path: String,
     pub size: u64,
     pub chunks: u64,
