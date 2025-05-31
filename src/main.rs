@@ -350,7 +350,7 @@ async fn start_network(
     app: Arc<Mutex<App>>,
     target_peer_addr: Option<Multiaddr>,
 ) -> Result<(), &'static str> {
-    let (mut client, event_stream, event_loop, peer_id) = service::node::new().unwrap();
+    let (mut client, event_stream, event_loop, peer_id) = service::node::new().map_err(|_| "Failed to create node")?;
 
     {
         let mut app = app.lock();
