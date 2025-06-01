@@ -3,6 +3,7 @@ use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::io::Read;
 use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
 
@@ -38,6 +39,7 @@ pub struct DirectoryItem {
     pub index: usize,
     pub depth: usize,
     pub selected: bool,
+    pub preview: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,6 +166,19 @@ impl App {
             .map(|rel_path| rel_path.components().count())
             .unwrap_or(0);
 
+        let preview = if is_dir {
+            format!("Directory: {name}")
+        } else {
+            std::fs::File::open(&path).map_or_else(
+                |_| "Unable to read file contents".to_string(),
+                |mut file| {
+                    let mut buffer = [0; 1000];
+                    let bytes_read = file.read(&mut buffer).unwrap_or(0);
+                    String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+                },
+            )
+        };
+
         DirectoryItem {
             name,
             path,
@@ -171,6 +186,7 @@ impl App {
             index,
             depth,
             selected,
+            preview,
         }
     }
 

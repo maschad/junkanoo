@@ -72,38 +72,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     let preview_content = app
         .selected_index
         .and_then(|index| app.directory_items.get(index))
-        .map_or_else(
-            || "No file selected".to_string(),
-            |item| {
-                if item.is_dir {
-                    // For directories, show a friendly message or list children
-                    let children: Vec<_> = app
-                        .directory_items
-                        .iter()
-                        .filter(|child| child.path.parent().unwrap_or(&PathBuf::new()) == item.path)
-                        .map(|child| {
-                            format!(
-                                "{}{}",
-                                if child.is_dir { "/" } else { "" },
-                                child.name.clone()
-                            )
-                        })
-                        .collect();
-                    if children.is_empty() {
-                        format!("Directory: {} (empty)", item.name)
-                    } else {
-                        format!(
-                            "Directory: {}\nChildren:\n{}",
-                            item.name,
-                            children.join("\n")
-                        )
-                    }
-                } else {
-                    std::fs::read_to_string(&item.path)
-                        .unwrap_or_else(|_| "Unable to read file contents".to_string())
-                }
-            },
-        );
+        .map_or("No file selected".to_string(), |item| item.preview.clone());
 
     let preview = Paragraph::new(preview_content)
         .block(preview_block)

@@ -227,6 +227,7 @@ mod tests {
             index: 0,
             depth: 0,
             selected: false,
+            preview: String::new(),
         };
 
         assert_eq!(item.name, "test");

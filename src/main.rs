@@ -17,6 +17,7 @@ use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
 use parking_lot::Mutex;
 use ratatui::{prelude::CrosstermBackend, Terminal};
 use service::node::{Client, Event as NetworkEvent};
+use std::io::Read;
 use tokio::spawn;
 use tracing::level_filters::LevelFilter;
 use tracing_appender::rolling;
@@ -280,6 +281,19 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
                             .to_string();
                         let is_dir = path.is_dir();
                         let depth = rel_path.components().count();
+
+                        let preview = if is_dir {
+                            "Directory".to_string()
+                        } else {
+                            std::fs::File::open(path).map_or_else(
+                                |_| "Unable to read file contents".to_string(),
+                                |mut file| {
+                                    let mut buffer = [0; 1000];
+                                    let bytes_read = file.read(&mut buffer).unwrap_or(0);
+                                    String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+                                },
+                            )
+                        };
                         DirectoryItem {
                             name,
                             path: rel_path.to_path_buf(),
@@ -287,6 +301,7 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
                             index,
                             depth,
                             selected: true,
+                            preview,
                         }
                     })
                     .collect()
