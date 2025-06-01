@@ -2,7 +2,6 @@
 
 [![standard-readme compliant](https://img.shields.io/badge/readme%20style-standard-brightgreen.svg)](https://github.com/RichardLitt/standard-readme)
 
-
 A decentralized ephemeral file sharing TUI browser 📁 🔄 🔒
 
 ## Overview
@@ -33,21 +32,6 @@ brew install junkanoo
 ```bash
 cargo install junkanoo
 ```
-
-### Using AUR (Arch Linux)
-
-```bash
-yay -S junkanoo
-# or
-paru -S junkanoo
-```
-
-### Using Nix
-
-```bash
-nix-env -iA nixpkgs.junkanoo
-```
-
 ### Building from Source
 
 1. Clone the repository:
@@ -82,9 +66,11 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Acknowledgments
 
-[rust-libp2p](https://github.com/libp2p/rust-libp2p) - The Rust implementation of the libp2p Networking Stack.
-[pcp](https://github.com/dennis-tra/pcp) - A command line peer-to-peer data transfer tool based on libp2p.
-[croc](https://github.com/schollz/croc) -  A tool that allows any two computers to simply and securely transfer files and folders.
+This is of course not the first file sharing tool, and thus I took inspiration from existing tools, as well as relied heavily on other projects code.
+
+- [rust-libp2p](https://github.com/libp2p/rust-libp2p) - The Rust implementation of the libp2p Networking Stack.
+- [pcp](https://github.com/dennis-tra/pcp) - A command line peer-to-peer data transfer tool based on libp2p.
+- [croc](https://github.com/schollz/croc) -  A tool that allows any two computers to simply and securely transfer files and folders.
 
 ## License
 

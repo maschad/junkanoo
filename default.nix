@@ -17,9 +17,10 @@ rustPlatform.buildRustPackage rec {
   cargoSha256 = ""; # You'll need to fill this in after building
 
   meta = with lib; {
-    description = "Decentralized ephemeral file sharing CLI browser";
+    description = "A decentralized ephemeral file sharing TUI browser";
     homepage = "https://github.com/maschad/junkanoo";
     license = licenses.mit;
-    maintainers = with maintainers; [ ];
+    maintainers = with maintainers; [ maschad ];
+    platforms = platforms.all;
   };
 }
