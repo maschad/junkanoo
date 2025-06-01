@@ -149,7 +149,7 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
                 };
                 let prefix = if item.is_dir { "📁 " } else { "📄 " };
 
-                let style = if Some(item.index) == app.selected_index.or(Some(0)) {
+                let style = if app.selected_index.is_some_and(|idx| idx == item.index) {
                     Style::default()
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD)

@@ -111,10 +111,16 @@ impl App {
                 (false, true) => std::cmp::Ordering::Greater,
                 _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
             });
+
+            // Update indices for the new items
+            for (i, item) in children.iter_mut().enumerate() {
+                item.index = i;
+            }
+
             self.directory_items = children;
             if self.directory_items.is_empty() {
                 self.selected_index = None;
-            } else {
+            } else if self.selected_index.is_none() {
                 self.selected_index = Some(0);
             }
             true
