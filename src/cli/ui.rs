@@ -126,36 +126,27 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
             .iter()
             .map(|item| {
                 let indent = "  ".repeat(item.depth);
-                let selected = item.path.strip_prefix(&app.current_path).map_or_else(
-                    |_| match app.state {
-                        AppState::Download => {
-                            let path_buf = PathBuf::from(&item.name);
-                            if app.items_to_download.contains(&path_buf) {
-                                "🔵 "
-                            } else {
-                                "  "
-                            }
-                        }
-                        AppState::Share => "  ",
-                    },
-                    |rel_path| match app.state {
-                        AppState::Share => {
+                let selected = match app.state {
+                    AppState::Share => {
+                        #[allow(clippy::option_if_let_else)]
+                        if let Ok(rel_path) = item.path.strip_prefix(&app.current_path) {
                             if app.items_to_share.contains(&rel_path.to_path_buf()) {
                                 "🔵 "
                             } else {
                                 "  "
                             }
+                        } else {
+                            "  "
                         }
-                        AppState::Download => {
-                            let path_buf = PathBuf::from(&item.name);
-                            if app.items_to_download.contains(&path_buf) {
-                                "🔵 "
-                            } else {
-                                "  "
-                            }
+                    }
+                    AppState::Download => {
+                        if app.items_to_download.contains(&item.path) {
+                            "🔵 "
+                        } else {
+                            "  "
                         }
-                    },
-                );
+                    }
+                };
                 let prefix = if item.is_dir { "📁 " } else { "📄 " };
 
                 let style = if Some(item.index) == app.selected_index.or(Some(0)) {
@@ -170,10 +161,7 @@ fn render_file_tree(frame: &mut Frame, app: &App, area: Rect) {
                             .unwrap_or(&PathBuf::new())
                             .to_path_buf(),
                     ),
-                    AppState::Download => {
-                        let path_buf = PathBuf::from(&item.name);
-                        app.items_to_download.contains(&path_buf)
-                    }
+                    AppState::Download => app.items_to_download.contains(&item.path),
                 } {
                     Style::default().fg(Color::Green)
                 } else {

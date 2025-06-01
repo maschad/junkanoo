@@ -3,7 +3,7 @@ use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{BufReader, Read};
 use std::path::PathBuf;
 use tokio::sync::mpsc::Sender;
 
@@ -85,11 +85,7 @@ impl App {
             clipboard_success: false,
         };
 
-        // Populate directory items in both share and download modes
-        if matches!(app.state, AppState::Share) || matches!(app.state, AppState::Download) {
-            app.populate_directory_items();
-        }
-
+        app.populate_directory_items();
         app
     }
 
@@ -171,14 +167,18 @@ impl App {
         } else {
             std::fs::File::open(&path).map_or_else(
                 |_| "Unable to read file contents".to_string(),
-                |mut file| {
-                    let mut buffer = [0; 1000];
-                    let bytes_read = file.read(&mut buffer).unwrap_or(0);
-                    String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+                |file| {
+                    let reader = BufReader::new(file);
+                    let mut buffer = String::new();
+                    // Read up to 1000 UTF-8 characters (not bytes)
+                    reader
+                        .take(4000) // Read up to 4000 bytes, adjust as needed for long UTF-8 chars
+                        .read_to_string(&mut buffer)
+                        .ok();
+                    buffer.chars().take(1000).collect()
                 },
             )
         };
-
         DirectoryItem {
             name,
             path,
@@ -360,12 +360,20 @@ impl App {
                                 }
                             }
                         } else {
-                            // For single files, store relative to current directory
-                            if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                                items_set.insert(rel_path.to_path_buf());
-                            } else {
-                                // If we can't strip the prefix, just use the filename
-                                items_set.insert(PathBuf::from(&item.name));
+                            match self.state {
+                                AppState::Share => {
+                                    // For share mode, store relative to current directory
+                                    if let Ok(rel_path) = item.path.strip_prefix(&self.current_path)
+                                    {
+                                        items_set.insert(rel_path.to_path_buf());
+                                    } else {
+                                        items_set.insert(PathBuf::from(&item.name));
+                                    }
+                                }
+                                AppState::Download => {
+                                    // For download mode, use the path directly since it's already relative
+                                    items_set.insert(item.path.clone());
+                                }
                             }
                         }
                         item.selected = true;

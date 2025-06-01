@@ -17,6 +17,7 @@ use libp2p::{multiaddr::Protocol, Multiaddr, PeerId};
 use parking_lot::Mutex;
 use ratatui::{prelude::CrosstermBackend, Terminal};
 use service::node::{Client, Event as NetworkEvent};
+use std::io::BufReader;
 use std::io::Read;
 use tokio::spawn;
 use tracing::level_filters::LevelFilter;
@@ -281,16 +282,20 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
                             .to_string();
                         let is_dir = path.is_dir();
                         let depth = rel_path.components().count();
-
                         let preview = if is_dir {
-                            "Directory".to_string()
+                            format!("Directory: {name}")
                         } else {
                             std::fs::File::open(path).map_or_else(
                                 |_| "Unable to read file contents".to_string(),
-                                |mut file| {
-                                    let mut buffer = [0; 1000];
-                                    let bytes_read = file.read(&mut buffer).unwrap_or(0);
-                                    String::from_utf8_lossy(&buffer[..bytes_read]).to_string()
+                                |file| {
+                                    let reader = BufReader::new(file);
+                                    let mut buffer = String::new();
+                                    // Read up to 1000 UTF-8 characters (not bytes)
+                                    reader
+                                        .take(4000) // Read up to 4000 bytes, adjust as needed for long UTF-8 chars
+                                        .read_to_string(&mut buffer)
+                                        .ok();
+                                    buffer.chars().take(1000).collect()
                                 },
                             )
                         };
