@@ -290,11 +290,7 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
                                 |file| {
                                     let reader = BufReader::new(file);
                                     let mut buffer = String::new();
-                                    // Read up to 1000 UTF-8 characters (not bytes)
-                                    reader
-                                        .take(4000) // Read up to 4000 bytes, adjust as needed for long UTF-8 chars
-                                        .read_to_string(&mut buffer)
-                                        .ok();
+                                    reader.take(4000).read_to_string(&mut buffer).ok();
                                     buffer.chars().take(1000).collect()
                                 },
                             )
@@ -313,12 +309,17 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
             }
         };
 
-        client
+        // Only send updates if there are changes
+        if let Err(e) = client
             .insert_directory_items(peer_id, directory_items)
             .await
-            .unwrap();
+        {
+            tracing::error!("Failed to send directory items: {}", e);
+            break;
+        }
 
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        // Sleep for a shorter duration to be more responsive
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
     }
 }
 
@@ -338,6 +339,7 @@ async fn handle_download_mode(
     client.dial(target_peer_id, target_peer_addr).await.unwrap();
     tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
 
+    // Initial directory request
     match client.request_directory(target_peer_id).await {
         Ok(display_response) => {
             let mut items = display_response.items;
@@ -357,6 +359,46 @@ async fn handle_download_mode(
                 app.current_path = std::path::PathBuf::new();
                 app.populate_directory_items();
             }
+
+            // Start a background task to handle directory updates
+            let mut client_clone = client.clone();
+            let app_clone = app.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    match client_clone.request_directory(target_peer_id).await {
+                        Ok(display_response) => {
+                            let mut items = display_response.items;
+                            items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+                                (true, false) => std::cmp::Ordering::Less,
+                                (false, true) => std::cmp::Ordering::Greater,
+                                _ => match a.depth.cmp(&b.depth) {
+                                    std::cmp::Ordering::Equal => {
+                                        a.name.to_lowercase().cmp(&b.name.to_lowercase())
+                                    }
+                                    other => other,
+                                },
+                            });
+
+                            let mut app = app_clone.lock();
+                            if app.all_shared_items != items {
+                                app.all_shared_items.clone_from(&items);
+                                app.directory_items = items;
+                                app.populate_directory_items();
+                                // Notify UI to refresh
+                                if let Some(refresh_sender) = &app.refresh_sender {
+                                    let _ = refresh_sender.try_send(());
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to request directory: {}", e);
+                            break;
+                        }
+                    }
+                }
+            });
+
             Ok(())
         }
         Err(e) => {
