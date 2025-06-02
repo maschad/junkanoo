@@ -39,6 +39,10 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: Publish to crates.io
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -46,25 +50,9 @@ jobs:
           path: target/${{ matrix.target }}/release/junkanoo*
           if-no-files-found: error
 
-  publish:
-    name: Publish to crates.io
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
-
   create-release:
     name: Create Release
-    needs: [build, publish]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts

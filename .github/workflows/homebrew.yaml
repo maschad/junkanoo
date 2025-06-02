@@ -13,7 +13,7 @@ jobs:
     runs-on: macos-latest
     steps:
       - name: Bump Homebrew Formula
-        uses: mislav/bump-homebrew-formula-action@v1
+        uses: mislav/bump-homebrew-formula-action@v3
         with:
           formula-name: junkanoo
           homebrew-tap: maschad/homebrew-junkanoo
