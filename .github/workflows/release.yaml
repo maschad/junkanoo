@@ -8,6 +8,11 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# Add permissions block at the workflow level
+permissions:
+  contents: write # Required for creating releases
+  packages: write # Required for publishing to crates.io
+
 jobs:
   build:
     name: Build ${{ matrix.os }}
@@ -54,6 +59,8 @@ jobs:
     name: Create Release
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -62,7 +69,7 @@ jobs:
 
       - name: Create Release
         id: create_release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: |
             artifacts/junkanoo-ubuntu/*
