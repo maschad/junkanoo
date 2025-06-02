@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    versioning-strategy: auto
+    ignore:
+      - dependency-name: "libp2p"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tokio"
+        update-types: ["version-update:semver-major"]
