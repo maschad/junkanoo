@@ -24,10 +24,6 @@ jobs:
           - os: macos-latest
             artifact_name: junkanoo-macos
             target: x86_64-apple-darwin
-          - os: ubuntu-latest
-            artifact_name: junkanoo-arch
-            target: x86_64-unknown-linux-gnu
-            is_arch: true
 
     steps:
       - uses: actions/checkout@v4
@@ -43,24 +39,11 @@ jobs:
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Install Arch Linux dependencies
-        if: matrix.is_arch
-        run: |
-          sudo pacman -Syu --noconfirm
-          sudo pacman -S --noconfirm base-devel
-
-      - name: Build Arch package
-        if: matrix.is_arch
-        run: |
-          makepkg -f
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: |
-            target/${{ matrix.target }}/release/junkanoo*
-            *.pkg.tar.zst
+          path: target/${{ matrix.target }}/release/junkanoo*
           if-no-files-found: error
 
   create-release:
@@ -81,7 +64,6 @@ jobs:
             artifacts/junkanoo-ubuntu/*
             artifacts/junkanoo-windows/*
             artifacts/junkanoo-macos/*
-            artifacts/junkanoo-arch/*.pkg.tar.zst
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
