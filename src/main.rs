@@ -424,12 +424,35 @@ async fn start_network(
     spawn(event_loop.run());
     spawn(handle_network_events(event_stream, app.clone()));
 
-    client
-        .start_listening("/ip4/0.0.0.0/udp/0/quic-v1".parse().unwrap())
-        .await
-        .expect("Listening not to fail.");
+    // Get IP and port from command line args, defaulting to 0.0.0.0:0
+    let matches = cli::commands::get_args().get_matches();
+    let default_ip = "0.0.0.0".to_string();
+    let default_port = "0".to_string();
+    let ip = matches.get_one::<String>("address").unwrap_or(&default_ip);
+    let port = matches.get_one::<String>("port").unwrap_or(&default_port);
 
-    let listening_addrs: Vec<Multiaddr> = client.get_listening_addrs().await.unwrap();
+    let addr = format!("/ip4/{ip}/udp/{port}/quic-v1")
+        .parse()
+        .unwrap_or_else(|e| {
+            tracing::error!("Failed to parse listening address: {}", e);
+            eprintln!("Error: Invalid listening address format. Please check your IP and port.");
+            std::process::exit(1);
+        });
+
+    client.start_listening(addr).await.unwrap_or_else(|e| {
+        tracing::error!("Failed to start listening: {}", e);
+        eprintln!(
+            "Error: Could not start listening on the specified address. The port might be in use."
+        );
+        std::process::exit(1);
+    });
+
+    let listening_addrs: Vec<Multiaddr> = client.get_listening_addrs().await.unwrap_or_else(|e| {
+        tracing::error!("Failed to get listening addresses: {}", e);
+        eprintln!("Error: Could not get listening addresses. Please try again.");
+        std::process::exit(1);
+    });
+
     {
         let mut app = app.lock();
         app.listening_addrs = listening_addrs;

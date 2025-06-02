@@ -9,6 +9,8 @@ pub fn get_args() -> Command {
         .subcommand_required(true)
         .arg_required_else_help(true)
         .arg(arg!(-v --debug "Print debug information"))
+        .arg(arg!(-a --address <IP_ADDRESS> "IP address to listen on"))
+        .arg(arg!(-p --port <PORT> "Port number to listen on"))
         .subcommand(
             Command::new("share")
                 .about("Send a file or directory to another peer")
