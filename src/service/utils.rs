@@ -27,12 +27,17 @@ impl FileTransfer {
             .and_then(|n| n.to_str())
             .unwrap_or("unknown_file");
         let file_name_bytes = file_name.as_bytes();
-        let name_len = u32::try_from(file_name_bytes.len());
+        let name_len = u32::try_from(file_name_bytes.len()).unwrap();
+
+        // Get file size
+        let file_size = tokio::fs::metadata(&self.path).await?.len();
 
         // Send the length of the filename first
-        stream.write_all(&name_len.unwrap().to_be_bytes()).await?;
+        stream.write_all(&name_len.to_be_bytes()).await?;
         // Then send the filename
         stream.write_all(file_name_bytes).await?;
+        // Send file size
+        stream.write_all(&file_size.to_be_bytes()).await?;
 
         // Now send the file contents
         let file = tokio::fs::File::open(&self.path).await?;
@@ -46,6 +51,11 @@ impl FileTransfer {
             stream.write_all(&buffer[..n]).await?;
             self.progress += n as u64;
         }
+
+        // Send end of file marker
+        stream.write_all(&[0u8; 4]).await?;
+
+        tracing::info!("File sent successfully to peer, saved as: {:?}", self.path);
         Ok(())
     }
 }
@@ -75,28 +85,38 @@ impl FileReceiver {
         let file_name = String::from_utf8(file_name_bytes)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-        // Now read the file contents
-        let mut buffer = vec![0; self.chunk_size];
-        let mut file_data = Vec::new();
+        // Read file size
+        let mut size_bytes = [0u8; 8];
+        stream.read_exact(&mut size_bytes).await?;
+        let file_size = u64::from_be_bytes(size_bytes);
 
-        loop {
-            match stream.read(&mut buffer).await {
-                Ok(0) => break, // End of stream
-                Ok(n) => {
-                    file_data.extend_from_slice(&buffer[..n]);
-                    self.progress += n as u64;
-                    tracing::debug!("Received {} bytes, total: {}", n, self.progress);
-                }
-                Err(e) => {
-                    tracing::error!("Error reading from stream: {}", e);
-                    return Err(e);
-                }
-            }
+        // Now read the file contents
+        let mut file_data = Vec::with_capacity(
+            usize::try_from(file_size)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
+        );
+        let mut bytes_received = 0;
+
+        #[allow(clippy::cast_possible_truncation)]
+        while bytes_received < file_size {
+            let bytes_to_read =
+                std::cmp::min(self.chunk_size, (file_size - bytes_received) as usize);
+            let mut chunk = vec![0; bytes_to_read];
+            stream.read_exact(&mut chunk).await?;
+            file_data.extend_from_slice(&chunk);
+            bytes_received += bytes_to_read as u64;
+            self.progress += bytes_to_read as u64;
+            tracing::debug!("Received {} bytes, total: {}", bytes_to_read, self.progress);
         }
 
         if !file_data.is_empty() {
-            tokio::fs::write(&file_name, file_data).await?;
-            tracing::info!("Successfully saved file as {}", file_name);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis();
+            let unique_filename = format!("{timestamp}_{file_name}");
+            tokio::fs::write(&unique_filename, file_data).await?;
+            tracing::info!("Successfully saved file as {unique_filename}");
         }
 
         Ok(file_name)

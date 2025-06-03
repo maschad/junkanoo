@@ -378,6 +378,7 @@ impl App {
                                 }
                                 AppState::Download => {
                                     // For download mode, use the path directly since it's already relative
+                                    tracing::info!("inserting item is: {:?}", item);
                                     items_set.insert(item.path.clone());
                                 }
                             }
@@ -490,6 +491,8 @@ impl App {
             tracing::error!("No peer ID available for download");
             return;
         };
+
+        tracing::info!("items_to_download are: {:?}", self.items_to_download);
 
         self.items_being_downloaded
             .clone_from(&self.items_to_download);
