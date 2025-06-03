@@ -4,6 +4,9 @@
 
 A decentralized ephemeral file sharing TUI browser 📁 🔄 🔒
 
+![junkanoo demo](./assets/junkanoo_demo.gif)
+
+
 ## Overview
 
 I had started building around the Christmas holidays, when [Junakoo](https://en.wikipedia.org/wiki/Junkanoo) is observed. In a sense it's a practice that helps us to share our secrets as a culture in a non-obvious way.
