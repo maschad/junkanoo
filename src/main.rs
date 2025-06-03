@@ -32,6 +32,8 @@ mod tests;
 #[tokio::main]
 async fn main() {
     setup_panic_handler();
+
+    #[cfg(debug_assertions)]
     setup_logger();
 
     let matches = cli::commands::get_args().get_matches();

@@ -445,28 +445,68 @@ impl EventLoop {
                         .open_stream(peer_id, JUNKANOO_FILE_PROTOCOL)
                         .await
                     {
-                        Ok(mut stream) => {
-                            let mut transfer = FileTransfer::new(FileMetadata {
-                                path: file_names_clone[0].clone(),
-                                size: 0,
-                                chunks: 0,
-                            });
-                            match transfer.stream_file(&mut stream).await {
-                                Ok(()) => {
-                                    event_sender
-                                        .send(Event::DownloadCompleted(file_names_clone))
-                                        .await
-                                        .expect("Event receiver not to be dropped.");
-                                    let _ = sender.send(Ok(Vec::new()));
+                        Ok(_) => {
+                            let mut successful_transfers = Vec::new();
+                            let mut failed_transfers = Vec::new();
+
+                            for file_name in file_names_clone {
+                                // Open a new stream for each file
+                                match stream_control
+                                    .open_stream(peer_id, JUNKANOO_FILE_PROTOCOL)
+                                    .await
+                                {
+                                    Ok(mut stream) => {
+                                        let mut transfer = FileTransfer::new(FileMetadata {
+                                            path: file_name.clone(),
+                                            size: 0,
+                                            chunks: 0,
+                                        });
+
+                                        match transfer.stream_file(&mut stream).await {
+                                            Ok(()) => {
+                                                successful_transfers.push(file_name);
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Transfer failed for file '{}' with error: {}",
+                                                    file_name,
+                                                    e
+                                                );
+                                                failed_transfers.push(file_name);
+                                            }
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::error!(
+                                            "Failed to open stream for file '{}': {}",
+                                            file_name,
+                                            e
+                                        );
+                                        failed_transfers.push(file_name);
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::error!("Transfer failed with error: {}", e);
-                                    event_sender
-                                        .send(Event::DownloadFailed(file_names_clone))
-                                        .await
-                                        .expect("Event receiver not to be dropped.");
-                                    let _ = sender.send(Err(Box::new(e) as Box<dyn Error + Send>));
-                                }
+                            }
+
+                            if !successful_transfers.is_empty() {
+                                event_sender
+                                    .send(Event::DownloadCompleted(successful_transfers))
+                                    .await
+                                    .expect("Event receiver not to be dropped.");
+                            }
+
+                            if failed_transfers.is_empty() {
+                                let _ = sender.send(Ok(Vec::new()));
+                            } else {
+                                let failed_files = failed_transfers.join(", ");
+                                event_sender
+                                    .send(Event::DownloadFailed(failed_transfers))
+                                    .await
+                                    .expect("Event receiver not to be dropped.");
+
+                                let _ = sender.send(Err(Box::new(std::io::Error::other(format!(
+                                    "Failed to transfer files: {failed_files}"
+                                )))
+                                    as Box<dyn Error + Send>));
                             }
                         }
                         Err(e) => {
