@@ -43,12 +43,17 @@ git clone https://github.com/yourusername/junkanoo.git
 cd junkanoo
 ```
 
-2. Build the project:
+2. Ensure you have Rust 1.87.0 installed (rustup will automatically handle this):
+```bash
+rustup show
+```
+
+3. Build the project:
 ```bash
 cargo build --release
 ```
 
-3. Install the binary (optional):
+4. Install the binary (optional):
 ```bash
 cargo install --path .
 ```
