@@ -17,6 +17,7 @@ use std::{
     error::Error,
     sync::LazyLock,
     time::Duration,
+    path::PathBuf,
 };
 use tokio::sync::Semaphore;
 
@@ -235,6 +236,7 @@ pub struct EventLoop {
     pending_request_file: HashMap<OutboundRequestId, PendingFileSender>,
     pending_request_display: HashMap<OutboundRequestId, PendingDisplaySender>,
     pending_directory_items: HashMap<PeerId, Vec<DirectoryItem>>,
+    path_mappings: HashMap<PeerId, HashMap<String, PathBuf>>,
     incoming_streams: stream::IncomingStreams,
 }
 
@@ -253,6 +255,7 @@ impl EventLoop {
             pending_request_file: HashMap::default(),
             pending_request_display: HashMap::default(),
             pending_directory_items: HashMap::default(),
+            path_mappings: HashMap::default(),
             incoming_streams,
         }
     }
@@ -270,22 +273,98 @@ impl EventLoop {
                     if let Some((peer, mut stream)) = stream {
                         tracing::info!("Received file transfer stream from peer {}", peer);
 
-                        // Spawn a task to handle the file transfer
-                        let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
-                        tokio::spawn(async move {
-                            let mut receiver = FileReceiver::new();
-
-                            match receiver.receive_file(&mut stream).await {
-                                Ok(file_name) => {
-                                    tracing::info!("Successfully received file '{}' from peer {}", file_name, peer);
+                        // Check if we have pending directory items (i.e., we are a host)
+                        let local_peer_id = *self.swarm.local_peer_id();
+                        let is_host = self.pending_directory_items.contains_key(&local_peer_id);
+                        
+                        if is_host {
+                            // Host side: receive file request and send files
+                            let directory_items = self.pending_directory_items.get(&local_peer_id).cloned();
+                            let path_mapping = self.path_mappings.get(&local_peer_id).cloned();
+                            let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
+                            
+                            tokio::spawn(async move {
+                                // First, receive the requested file path
+                                let mut len_bytes = [0u8; 4];
+                                if let Err(e) = stream.read_exact(&mut len_bytes).await {
+                                    tracing::error!("Failed to read file path length: {}", e);
+                                    drop(permit);
+                                    return;
                                 }
-                                Err(e) => {
-                                    tracing::error!("Failed to receive file from peer {}: {}", peer, e);
+                                let path_len = u32::from_be_bytes(len_bytes) as usize;
+                                
+                                let mut path_bytes = vec![0u8; path_len];
+                                if let Err(e) = stream.read_exact(&mut path_bytes).await {
+                                    tracing::error!("Failed to read file path: {}", e);
+                                    drop(permit);
+                                    return;
                                 }
-                            }
+                                
+                                let requested_path = match String::from_utf8(path_bytes) {
+                                    Ok(path) => path,
+                                    Err(e) => {
+                                        tracing::error!("Invalid UTF-8 in file path: {}", e);
+                                        drop(permit);
+                                        return;
+                                    }
+                                };
+                                
+                                tracing::info!("Host received request for file: {}", requested_path);
+                                
+                                // Find the actual file path from directory items or path mapping
+                                let actual_path = path_mapping.as_ref().and_then(|mapping| {
+                                    mapping.get(&requested_path).cloned()
+                                }).or_else(|| {
+                                    directory_items.as_ref().and_then(|items| {
+                                        items.iter().find_map(|item| {
+                                            if item.path.to_string_lossy() == requested_path {
+                                                // For backward compatibility, try to find the file
+                                                // This might not work if paths are relative
+                                                Some(item.path.clone())
+                                            } else {
+                                                None
+                                            }
+                                        })
+                                    })
+                                });
+                                
+                                if let Some(file_path) = actual_path {
+                                    // Now send the file
+                                    let mut transfer = FileTransfer::new(FileMetadata {
+                                        path: file_path.to_string_lossy().to_string(),
+                                        size: 0,
+                                        chunks: 0,
+                                    });
+                                    
+                                    if let Err(e) = transfer.stream_file(&mut stream).await {
+                                        tracing::error!("Failed to send file {}: {}", requested_path, e);
+                                    } else {
+                                        tracing::info!("Successfully sent file {}", requested_path);
+                                    }
+                                } else {
+                                    tracing::error!("File not found in shared items: {}", requested_path);
+                                }
+                                
+                                drop(permit);
+                            });
+                        } else {
+                            // Client side: receive files (existing code)
+                            let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
+                            tokio::spawn(async move {
+                                let mut receiver = FileReceiver::new();
 
-                            drop(permit);
-                        });
+                                match receiver.receive_file(&mut stream).await {
+                                    Ok(file_name) => {
+                                        tracing::info!("Successfully received file '{}' from peer {}", file_name, peer);
+                                    }
+                                    Err(e) => {
+                                        tracing::error!("Failed to receive file from peer {}: {}", peer, e);
+                                    }
+                                }
+
+                                drop(permit);
+                            });
+                        }
                     }
                 }
             }
@@ -440,45 +519,44 @@ impl EventLoop {
                 let mut event_sender = self.event_sender.clone();
 
                 tokio::spawn(async move {
-                    // Open a new stream to the peer instead of waiting for an incoming stream
-                    match stream_control
-                        .open_stream(peer_id, JUNKANOO_FILE_PROTOCOL)
-                        .await
-                    {
-                        Ok(_) => {
-                            let mut successful_transfers = Vec::new();
-                            let mut failed_transfers = Vec::new();
+                    let mut successful_transfers = Vec::new();
+                    let mut failed_transfers = Vec::new();
 
-                            for file_name in file_names_clone {
-                                // Open a new stream for each file
-                                match stream_control
-                                    .open_stream(peer_id, JUNKANOO_FILE_PROTOCOL)
-                                    .await
-                                {
-                                    Ok(mut stream) => {
-                                        let mut transfer = FileTransfer::new(FileMetadata {
-                                            path: file_name.clone(),
-                                            size: 0,
-                                            chunks: 0,
-                                        });
-
-                                        match transfer.stream_file(&mut stream).await {
-                                            Ok(()) => {
-                                                successful_transfers.push(file_name);
-                                            }
-                                            Err(e) => {
-                                                tracing::error!(
-                                                    "Transfer failed for file '{}' with error: {}",
-                                                    file_name,
-                                                    e
-                                                );
-                                                failed_transfers.push(file_name);
-                                            }
-                                        }
+                    for file_name in file_names_clone {
+                        // Open a new stream for each file
+                        match stream_control
+                            .open_stream(peer_id, JUNKANOO_FILE_PROTOCOL)
+                            .await
+                        {
+                            Ok(mut stream) => {
+                                // Send the file request to the host
+                                let path_bytes = file_name.as_bytes();
+                                let path_len = u32::try_from(path_bytes.len()).unwrap();
+                                
+                                // Send path length
+                                if let Err(e) = stream.write_all(&path_len.to_be_bytes()).await {
+                                    tracing::error!("Failed to send path length for file '{}': {}", file_name, e);
+                                    failed_transfers.push(file_name);
+                                    continue;
+                                }
+                                
+                                // Send path
+                                if let Err(e) = stream.write_all(path_bytes).await {
+                                    tracing::error!("Failed to send path for file '{}': {}", file_name, e);
+                                    failed_transfers.push(file_name);
+                                    continue;
+                                }
+                                
+                                // Now receive the file
+                                let mut receiver = FileReceiver::new();
+                                match receiver.receive_file(&mut stream).await {
+                                    Ok(received_file_name) => {
+                                        tracing::info!("Successfully received file '{}'", received_file_name);
+                                        successful_transfers.push(file_name);
                                     }
                                     Err(e) => {
                                         tracing::error!(
-                                            "Failed to open stream for file '{}': {}",
+                                            "Failed to receive file '{}': {}",
                                             file_name,
                                             e
                                         );
@@ -486,37 +564,37 @@ impl EventLoop {
                                     }
                                 }
                             }
-
-                            if !successful_transfers.is_empty() {
-                                event_sender
-                                    .send(Event::DownloadCompleted(successful_transfers))
-                                    .await
-                                    .expect("Event receiver not to be dropped.");
-                            }
-
-                            if failed_transfers.is_empty() {
-                                let _ = sender.send(Ok(Vec::new()));
-                            } else {
-                                let failed_files = failed_transfers.join(", ");
-                                event_sender
-                                    .send(Event::DownloadFailed(failed_transfers))
-                                    .await
-                                    .expect("Event receiver not to be dropped.");
-
-                                let _ = sender.send(Err(Box::new(std::io::Error::other(format!(
-                                    "Failed to transfer files: {failed_files}"
-                                )))
-                                    as Box<dyn Error + Send>));
+                            Err(e) => {
+                                tracing::error!(
+                                    "Failed to open stream for file '{}': {}",
+                                    file_name,
+                                    e
+                                );
+                                failed_transfers.push(file_name);
                             }
                         }
-                        Err(e) => {
-                            tracing::error!("Failed to open stream: {}", e);
-                            event_sender
-                                .send(Event::DownloadFailed(file_names_clone))
-                                .await
-                                .expect("Event receiver not to be dropped.");
-                            let _ = sender.send(Err(Box::new(e) as Box<dyn Error + Send>));
-                        }
+                    }
+
+                    if !successful_transfers.is_empty() {
+                        event_sender
+                            .send(Event::DownloadCompleted(successful_transfers))
+                            .await
+                            .expect("Event receiver not to be dropped.");
+                    }
+
+                    if failed_transfers.is_empty() {
+                        let _ = sender.send(Ok(Vec::new()));
+                    } else {
+                        let failed_files = failed_transfers.join(", ");
+                        event_sender
+                            .send(Event::DownloadFailed(failed_transfers))
+                            .await
+                            .expect("Event receiver not to be dropped.");
+
+                        let _ = sender.send(Err(Box::new(std::io::Error::other(format!(
+                            "Failed to transfer files: {failed_files}"
+                        )))
+                            as Box<dyn Error + Send>));
                     }
                 });
             }
@@ -525,8 +603,19 @@ impl EventLoop {
                 directory_items,
                 sender,
             } => {
+                // Build path mapping from the directory items using absolute paths
+                let mut path_mapping = HashMap::new();
+                
+                for item in &directory_items {
+                    let path_str = item.path.to_string_lossy().to_string();
+                    // Use the absolute path if available, otherwise fall back to the relative path
+                    let actual_path = item.absolute_path.as_ref().unwrap_or(&item.path).clone();
+                    path_mapping.insert(path_str, actual_path);
+                }
+                
                 self.pending_directory_items
                     .insert(peer_id, directory_items);
+                self.path_mappings.insert(peer_id, path_mapping);
 
                 let _ = sender.send(Ok(()));
             }

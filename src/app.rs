@@ -40,6 +40,9 @@ pub struct DirectoryItem {
     pub depth: usize,
     pub selected: bool,
     pub preview: String,
+    // This field is not serialized and is only used on the host side for path resolution
+    #[serde(skip)]
+    pub absolute_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,6 +196,7 @@ impl App {
             depth,
             selected,
             preview,
+            absolute_path: None,
         }
     }
 

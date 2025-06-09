@@ -258,36 +258,45 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
         let directory_items = {
             let app = app.lock();
             let all_paths: Vec<_> = app.items_to_share.iter().cloned().collect();
+            let current_dir = app.current_path.clone();
             drop(app); // Release the lock early
 
             if all_paths.is_empty() {
                 Vec::new()
             } else {
-                let mut virtual_root = all_paths[0].clone();
-                for path in &all_paths[1..] {
+                // Convert relative paths to absolute paths
+                let absolute_paths: Vec<_> = all_paths
+                    .iter()
+                    .map(|path| current_dir.join(path))
+                    .collect();
+                
+                let mut virtual_root = absolute_paths[0].clone();
+                for path in &absolute_paths[1..] {
                     virtual_root = virtual_root
                         .ancestors()
                         .find(|ancestor| path.starts_with(ancestor))
                         .unwrap_or(&virtual_root)
                         .to_path_buf();
                 }
-                all_paths
+                
+                absolute_paths
                     .iter()
                     .enumerate()
-                    .map(|(index, path)| {
-                        let rel_path = path.strip_prefix(&virtual_root).unwrap_or(path);
+                    .map(|(index, abs_path)| {
+                        let rel_path = abs_path.strip_prefix(&virtual_root).unwrap_or(abs_path);
+                        
                         let name = rel_path
                             .file_name()
-                            .or_else(|| path.file_name())
+                            .or_else(|| abs_path.file_name())
                             .unwrap_or_default()
                             .to_string_lossy()
                             .to_string();
-                        let is_dir = path.is_dir();
+                        let is_dir = abs_path.is_dir();
                         let depth = rel_path.components().count();
                         let preview = if is_dir {
                             format!("Directory: {name}")
                         } else {
-                            std::fs::File::open(path).map_or_else(
+                            std::fs::File::open(abs_path).map_or_else(
                                 |_| "Unable to read file contents".to_string(),
                                 |file| {
                                     let reader = BufReader::new(file);
@@ -305,6 +314,7 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
                             depth,
                             selected: true,
                             preview,
+                            absolute_path: Some(abs_path.clone()),
                         }
                     })
                     .collect()
