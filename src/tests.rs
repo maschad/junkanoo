@@ -1,7 +1,7 @@
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
-    use crate::app::{App, AppState, ConnectionState};
+    use crate::app::{App, AppState, ConnectionState, DirectoryItem};
     use libp2p::PeerId;
     use std::fs::{self, File};
     use std::io::Write;
@@ -220,7 +220,7 @@ mod tests {
     #[test]
     fn test_directory_item_creation() {
         let path = PathBuf::from("test/path");
-        let item = crate::app::DirectoryItem {
+        let item = DirectoryItem {
             name: "test".to_string(),
             path: path.clone(),
             is_dir: true,
@@ -228,6 +228,7 @@ mod tests {
             depth: 0,
             selected: false,
             preview: String::new(),
+            display_path: PathBuf::new(),
         };
 
         assert_eq!(item.name, "test");

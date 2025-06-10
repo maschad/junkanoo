@@ -20,9 +20,12 @@ impl FileTransfer {
     }
 
     pub async fn stream_file(&mut self, stream: &mut Stream) -> io::Result<()> {
+        // Use the absolute path directly
+        let full_path = std::path::PathBuf::from(&self.path);
+        tracing::info!("Attempting to stream file from path: {:?}", full_path);
+
         // First send the filename
-        let file_name = self
-            .path
+        let file_name = full_path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("unknown_file");
@@ -30,7 +33,8 @@ impl FileTransfer {
         let name_len = u32::try_from(file_name_bytes.len()).unwrap();
 
         // Get file size
-        let file_size = tokio::fs::metadata(&self.path).await?.len();
+        let file_size = tokio::fs::metadata(&full_path).await?.len();
+        tracing::info!("File size: {} bytes", file_size);
 
         // Send the length of the filename first
         stream.write_all(&name_len.to_be_bytes()).await?;
@@ -40,7 +44,7 @@ impl FileTransfer {
         stream.write_all(&file_size.to_be_bytes()).await?;
 
         // Now send the file contents
-        let file = tokio::fs::File::open(&self.path).await?;
+        let file = tokio::fs::File::open(&full_path).await?;
         let mut reader = tokio::io::BufReader::new(file);
         let mut buffer = vec![0; self.chunk_size];
 

@@ -456,6 +456,10 @@ impl EventLoop {
                                     .await
                                 {
                                     Ok(mut stream) => {
+                                        tracing::info!(
+                                            "Creating FileTransfer with path: {}",
+                                            file_name
+                                        );
                                         let mut transfer = FileTransfer::new(FileMetadata {
                                             path: file_name.clone(),
                                             size: 0,

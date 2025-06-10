@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::{io::Stdout, sync::Arc};
 
 use app::{App, ConnectionState, DirectoryItem};
@@ -235,8 +236,8 @@ fn render_loop(terminal: &mut Terminal<CrosstermBackend<Stdout>>, app: &Arc<Mute
                                     // Clone the app before dropping the lock
                                     let mut app_clone = app.clone();
                                     tracing::debug!(
-                                        "Starting download with {} items selected",
-                                        app.items_to_download.len()
+                                        "Starting download with {:#?} items selected",
+                                        app.items_to_download
                                     );
                                     // Start the download in a new task
                                     tokio::spawn(async move {
@@ -271,17 +272,37 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
                         .unwrap_or(&virtual_root)
                         .to_path_buf();
                 }
+                tracing::info!("Virtual root path: {:?}", virtual_root);
                 all_paths
                     .iter()
                     .enumerate()
                     .map(|(index, path)| {
-                        let rel_path = path.strip_prefix(&virtual_root).unwrap_or(path);
-                        let name = rel_path
+                        tracing::info!("Processing path: {:?}", path);
+
+                        // Get the absolute path for file operations
+                        let abs_path = std::fs::canonicalize(path).unwrap_or_else(|_| path.clone());
+                        tracing::info!("Absolute path: {:?}", abs_path);
+
+                        // Get the name from the path
+                        let name = path
                             .file_name()
-                            .or_else(|| path.file_name())
                             .unwrap_or_default()
                             .to_string_lossy()
                             .to_string();
+
+                        // Get the relative path for UI display
+                        let rel_path = path
+                            .strip_prefix(&virtual_root)
+                            .unwrap_or(path)
+                            .to_path_buf();
+
+                        tracing::info!(
+                            "Name: {}, Relative path: {:?}, Absolute path: {:?}",
+                            name,
+                            rel_path,
+                            abs_path
+                        );
+
                         let is_dir = path.is_dir();
                         let depth = rel_path.components().count();
                         let preview = if is_dir {
@@ -297,15 +318,18 @@ async fn handle_host_mode(client: &mut Client, peer_id: PeerId, app: Arc<Mutex<A
                                 },
                             )
                         };
-                        DirectoryItem {
+                        let item = DirectoryItem {
                             name,
-                            path: rel_path.to_path_buf(),
+                            path: abs_path, // Use the absolute path for file operations
+                            display_path: rel_path, // Use the relative path for UI display
                             is_dir,
                             index,
                             depth,
                             selected: true,
                             preview,
-                        }
+                        };
+                        tracing::info!("Created DirectoryItem: {:?}", item);
+                        item
                     })
                     .collect()
             }
@@ -345,6 +369,21 @@ async fn handle_download_mode(
     match client.request_directory(target_peer_id).await {
         Ok(display_response) => {
             let mut items = display_response.items;
+            // For download mode, we need to ensure both paths are properly set
+            for item in &mut items {
+                tracing::info!("path before setting paths is: {:?}", item.path);
+                // Keep the absolute path for file operations
+                let abs_path = item.path.clone();
+                // Use just the name for display
+                let display_path = PathBuf::from(&item.name);
+                item.path = abs_path;
+                item.display_path = display_path;
+                tracing::info!(
+                    "Set paths - absolute: {:?}, display: {:?}",
+                    item.path,
+                    item.display_path
+                );
+            }
             items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
@@ -358,8 +397,9 @@ async fn handle_download_mode(
                 let mut app = app.lock();
                 app.all_shared_items.clone_from(&items);
                 app.directory_items = items;
-                app.current_path = std::path::PathBuf::new();
+                app.current_path = PathBuf::new();
                 app.populate_directory_items();
+                tracing::info!("Initial directory items: {:?}", app.directory_items);
             }
 
             // Start a background task to handle directory updates
@@ -371,6 +411,15 @@ async fn handle_download_mode(
                     match client_clone.request_directory(target_peer_id).await {
                         Ok(display_response) => {
                             let mut items = display_response.items;
+                            // For download mode, we need to ensure both paths are properly set
+                            for item in &mut items {
+                                // Keep the absolute path for file operations
+                                let abs_path = item.path.clone();
+                                // Use just the name for display
+                                let display_path = PathBuf::from(&item.name);
+                                item.path = abs_path;
+                                item.display_path = display_path;
+                            }
                             items.sort_by(|a, b| match (a.is_dir, b.is_dir) {
                                 (true, false) => std::cmp::Ordering::Less,
                                 (false, true) => std::cmp::Ordering::Greater,
@@ -387,6 +436,10 @@ async fn handle_download_mode(
                                 app.all_shared_items.clone_from(&items);
                                 app.directory_items = items;
                                 app.populate_directory_items();
+                                tracing::info!(
+                                    "Updated directory items: {:?}",
+                                    app.directory_items
+                                );
                                 // Notify UI to refresh
                                 if let Some(refresh_sender) = &app.refresh_sender {
                                     let _ = refresh_sender.try_send(());
