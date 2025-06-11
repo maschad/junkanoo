@@ -1,5 +1,4 @@
-use futures::io::{AsyncReadExt, AsyncWriteExt};
-use libp2p::Stream;
+use futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use std::error::Error;
 use std::io;
 use std::path::PathBuf;
@@ -66,7 +65,15 @@ impl FileTransfer {
         }
     }
 
-    pub async fn stream_file(&self, stream: &mut Stream) -> Result<(), Box<dyn Error + Send>> {
+    #[cfg(test)]
+    pub const fn path(&self) -> &PathBuf {
+        &self.path
+    }
+
+    pub async fn stream_file<S>(&self, stream: &mut S) -> Result<(), Box<dyn Error + Send>>
+    where
+        S: AsyncWrite + Unpin,
+    {
         let current_dir =
             std::env::current_dir().map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
         let full_path = current_dir.join(&self.path);
@@ -141,7 +148,10 @@ impl FileReceiver {
         }
     }
 
-    pub async fn receive_file(&self, stream: &mut Stream) -> Result<String, Box<dyn Error + Send>> {
+    pub async fn receive_file<S>(&self, stream: &mut S) -> Result<String, Box<dyn Error + Send>>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         tracing::debug!("Receiving file");
 
         // Read the relative path length
