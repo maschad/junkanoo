@@ -1,4 +1,3 @@
-use async_std::path::Path;
 use futures::io::{AsyncReadExt, AsyncWriteExt};
 use libp2p::Stream;
 use std::error::Error;
@@ -45,6 +44,7 @@ pub struct FileTransfer {
     progress: Arc<AtomicUsize>,
 }
 
+#[allow(clippy::ptr_arg)]
 impl FileTransfer {
     pub fn new(path: &PathBuf) -> Self {
         // Convert to relative path immediately
@@ -141,10 +141,7 @@ impl FileReceiver {
         }
     }
 
-    pub async fn receive_file(
-        &mut self,
-        stream: &mut Stream,
-    ) -> Result<String, Box<dyn Error + Send>> {
+    pub async fn receive_file(&self, stream: &mut Stream) -> Result<String, Box<dyn Error + Send>> {
         tracing::debug!("Receiving file");
 
         // Read the relative path length
@@ -153,7 +150,8 @@ impl FileReceiver {
             .read_exact(&mut path_len_bytes)
             .await
             .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
-        let path_len = u64::from_le_bytes(path_len_bytes) as usize;
+        let path_len = usize::try_from(u64::from_le_bytes(path_len_bytes))
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
 
         tracing::debug!("Path length: {}", path_len);
 

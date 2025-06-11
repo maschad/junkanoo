@@ -281,10 +281,11 @@ impl EventLoop {
                                 drop(permit);
                                 return;
                             }
-                            let path_len = u64::from_le_bytes(path_len_bytes) as usize;
+                            let path_len = usize::try_from(u64::from_le_bytes(path_len_bytes))
+                                .map_err(|e| Box::new(e) as Box<dyn Error + Send>);
 
                             // Read the requested file path
-                            let mut path_bytes = vec![0u8; path_len];
+                            let mut path_bytes = vec![0u8; path_len.unwrap()];
                             if let Err(e) = stream.read_exact(&mut path_bytes).await {
                                 tracing::error!("Failed to read path from peer {}: {}", peer, e);
                                 drop(permit);
@@ -511,7 +512,7 @@ impl EventLoop {
                                         }
 
                                         // Now receive the file
-                                        let mut receiver = FileReceiver::new();
+                                        let receiver = FileReceiver::new();
                                         match receiver.receive_file(&mut stream).await {
                                             Ok(file_name) => {
                                                 tracing::info!(
