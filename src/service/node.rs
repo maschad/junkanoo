@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{hash_map, HashMap},
     error::Error,
+    path::PathBuf,
     sync::LazyLock,
     time::Duration,
 };
@@ -273,14 +274,41 @@ impl EventLoop {
                         // Spawn a task to handle the file transfer
                         let permit = TRANSFER_SEMAPHORE.acquire().await.unwrap();
                         tokio::spawn(async move {
-                            let mut receiver = FileReceiver::new();
+                            // Read the file path request from the stream
+                            let mut path_len_bytes = [0u8; 8];
+                            if let Err(e) = stream.read_exact(&mut path_len_bytes).await {
+                                tracing::error!("Failed to read path length from peer {}: {}", peer, e);
+                                drop(permit);
+                                return;
+                            }
+                            let path_len = u64::from_le_bytes(path_len_bytes) as usize;
 
-                            match receiver.receive_file(&mut stream).await {
-                                Ok(file_name) => {
-                                    tracing::info!("Successfully received file '{}' from peer {}", file_name, peer);
+                            // Read the requested file path
+                            let mut path_bytes = vec![0u8; path_len];
+                            if let Err(e) = stream.read_exact(&mut path_bytes).await {
+                                tracing::error!("Failed to read path from peer {}: {}", peer, e);
+                                drop(permit);
+                                return;
+                            }
+                            let file_path = match String::from_utf8(path_bytes) {
+                                Ok(path) => path,
+                                Err(e) => {
+                                    tracing::error!("Invalid UTF-8 in path from peer {}: {}", peer, e);
+                                    drop(permit);
+                                    return;
+                                }
+                            };
+
+                            tracing::info!("Received file request for '{}' from peer {}", file_path, peer);
+
+                            // Send the file
+                            let transfer = FileTransfer::new(&PathBuf::from(&file_path));
+                            match transfer.stream_file(&mut stream).await {
+                                Ok(()) => {
+                                    tracing::info!("Successfully sent file '{}' to peer {}", file_path, peer);
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to receive file from peer {}: {}", peer, e);
+                                    tracing::error!("Failed to send file '{}' to peer {}: {}", file_path, peer, e);
                                 }
                             }
 
@@ -460,14 +488,37 @@ impl EventLoop {
                                             "Creating FileTransfer with path: {}",
                                             file_name
                                         );
-                                        let mut transfer = FileTransfer::new(FileMetadata {
-                                            path: file_name.clone(),
-                                            size: 0,
-                                            chunks: 0,
-                                        });
 
-                                        match transfer.stream_file(&mut stream).await {
-                                            Ok(()) => {
+                                        // First send the file path request
+                                        let path_bytes = file_name.as_bytes();
+                                        if let Err(e) = stream
+                                            .write_all(&(path_bytes.len() as u64).to_le_bytes())
+                                            .await
+                                        {
+                                            tracing::error!("Failed to send path length: {}", e);
+                                            failed_transfers.push(file_name);
+                                            continue;
+                                        }
+                                        if let Err(e) = stream.write_all(path_bytes).await {
+                                            tracing::error!("Failed to send path: {}", e);
+                                            failed_transfers.push(file_name);
+                                            continue;
+                                        }
+                                        if let Err(e) = stream.flush().await {
+                                            tracing::error!("Failed to flush stream: {}", e);
+                                            failed_transfers.push(file_name);
+                                            continue;
+                                        }
+
+                                        // Now receive the file
+                                        let mut receiver = FileReceiver::new();
+                                        match receiver.receive_file(&mut stream).await {
+                                            Ok(file_name) => {
+                                                tracing::info!(
+                                                    "Successfully received file '{}' from peer {}",
+                                                    file_name,
+                                                    peer_id
+                                                );
                                                 successful_transfers.push(file_name);
                                             }
                                             Err(e) => {

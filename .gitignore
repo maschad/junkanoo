@@ -3,3 +3,4 @@
 .env
 logs/
 test_share/
+.DS_Store

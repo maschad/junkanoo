@@ -1,128 +1,223 @@
-use crate::service::node::FileMetadata;
-use async_std::{io, path::PathBuf};
-use futures::{AsyncReadExt, AsyncWriteExt};
+use async_std::path::Path;
+use futures::io::{AsyncReadExt, AsyncWriteExt};
 use libp2p::Stream;
-use tokio::io::AsyncReadExt as _;
+use std::error::Error;
+use std::io;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use tokio::fs::File;
+use tokio::io::AsyncReadExt as TokioAsyncReadExt;
+use tokio::io::AsyncWriteExt as TokioAsyncWriteExt;
+
+#[derive(Debug)]
+pub enum FileTransferError {
+    Io(io::Error),
+    Utf8(std::string::FromUtf8Error),
+}
+
+impl std::fmt::Display for FileTransferError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "IO error: {e}"),
+            Self::Utf8(e) => write!(f, "UTF-8 error: {e}"),
+        }
+    }
+}
+
+impl Error for FileTransferError {}
+
+impl From<std::string::FromUtf8Error> for FileTransferError {
+    fn from(err: std::string::FromUtf8Error) -> Self {
+        Self::Utf8(err)
+    }
+}
+
+impl From<FileTransferError> for Box<dyn Error + Send> {
+    fn from(err: FileTransferError) -> Self {
+        Box::new(err)
+    }
+}
 
 pub struct FileTransfer {
     path: PathBuf,
     chunk_size: usize,
-    progress: u64,
+    progress: Arc<AtomicUsize>,
 }
 
 impl FileTransfer {
-    pub fn new(metadata: FileMetadata) -> Self {
+    pub fn new(path: &PathBuf) -> Self {
+        // Convert to relative path immediately
+        let current_dir = std::env::current_dir().unwrap_or_default();
+        let relative_path = path
+            .strip_prefix(&current_dir)
+            .unwrap_or(path)
+            .to_path_buf();
+
+        tracing::debug!(
+            "Relative path being used for file transfer: {:?}",
+            relative_path
+        );
+
         Self {
-            path: metadata.path.into(),
+            path: relative_path,
             chunk_size: 1024 * 1024, // 1MB chunks
-            progress: 0,
+            progress: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    pub async fn stream_file(&mut self, stream: &mut Stream) -> io::Result<()> {
-        // Use the absolute path directly
-        let full_path = std::path::PathBuf::from(&self.path);
-        tracing::info!("Attempting to stream file from path: {:?}", full_path);
+    pub async fn stream_file(&self, stream: &mut Stream) -> Result<(), Box<dyn Error + Send>> {
+        let current_dir =
+            std::env::current_dir().map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let full_path = current_dir.join(&self.path);
 
-        // First send the filename
-        let file_name = full_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown_file");
-        let file_name_bytes = file_name.as_bytes();
-        let name_len = u32::try_from(file_name_bytes.len()).unwrap();
+        tracing::debug!("Full path being used for file transfer: {:?}", full_path);
 
-        // Get file size
-        let file_size = tokio::fs::metadata(&full_path).await?.len();
-        tracing::info!("File size: {} bytes", file_size);
+        let file = File::open(&full_path)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let metadata = file
+            .metadata()
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let file_size =
+            usize::try_from(metadata.len()).map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
 
-        // Send the length of the filename first
-        stream.write_all(&name_len.to_be_bytes()).await?;
-        // Then send the filename
-        stream.write_all(file_name_bytes).await?;
-        // Send file size
-        stream.write_all(&file_size.to_be_bytes()).await?;
+        // Send the relative path and file size
+        let path_str = self.path.to_string_lossy().to_string();
+        let path_bytes = path_str.as_bytes();
+        stream
+            .write_all(&(path_bytes.len() as u64).to_le_bytes())
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        stream
+            .write_all(path_bytes)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        stream
+            .write_all(&file_size.to_le_bytes())
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
 
-        // Now send the file contents
-        let file = tokio::fs::File::open(&full_path).await?;
-        let mut reader = tokio::io::BufReader::new(file);
-        let mut buffer = vec![0; self.chunk_size];
+        let mut reader = tokio::io::BufReader::with_capacity(self.chunk_size, file);
+        let mut buffer = vec![0u8; self.chunk_size];
+        let mut total_read = 0;
 
-        while let Ok(n) = reader.read(&mut buffer).await {
-            if n == 0 {
+        loop {
+            let bytes_read = reader
+                .read(&mut buffer)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+            if bytes_read == 0 {
                 break;
             }
-            stream.write_all(&buffer[..n]).await?;
-            self.progress += n as u64;
+
+            stream
+                .write_all(&buffer[..bytes_read])
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+            total_read += bytes_read;
+            self.progress.store(total_read, Ordering::SeqCst);
         }
 
-        // Send end of file marker
-        stream.write_all(&[0u8; 4]).await?;
-
-        tracing::info!("File sent successfully to peer, saved as: {:?}", self.path);
+        stream
+            .flush()
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
         Ok(())
     }
 }
 
 pub struct FileReceiver {
     chunk_size: usize,
-    progress: u64,
+    progress: Arc<AtomicUsize>,
 }
 
 impl FileReceiver {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             chunk_size: 1024 * 1024, // 1MB chunks
-            progress: 0,
+            progress: Arc::new(AtomicUsize::new(0)),
         }
     }
 
-    pub async fn receive_file(&mut self, stream: &mut Stream) -> io::Result<String> {
-        // First read the filename length
-        let mut len_bytes = [0u8; 4];
-        stream.read_exact(&mut len_bytes).await?;
-        let name_len = u32::from_be_bytes(len_bytes) as usize;
+    pub async fn receive_file(
+        &mut self,
+        stream: &mut Stream,
+    ) -> Result<String, Box<dyn Error + Send>> {
+        tracing::debug!("Receiving file");
 
-        // Then read the filename
-        let mut file_name_bytes = vec![0u8; name_len];
-        stream.read_exact(&mut file_name_bytes).await?;
-        let file_name = String::from_utf8(file_name_bytes)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        // Read the relative path length
+        let mut path_len_bytes = [0u8; 8];
+        stream
+            .read_exact(&mut path_len_bytes)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let path_len = u64::from_le_bytes(path_len_bytes) as usize;
 
-        // Read file size
+        tracing::debug!("Path length: {}", path_len);
+
+        // Read the relative path
+        let mut path_bytes = vec![0u8; path_len];
+        stream
+            .read_exact(&mut path_bytes)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let relative_path = String::from_utf8(path_bytes)
+            .map_err(|e| Box::new(FileTransferError::from(e)) as Box<dyn Error + Send>)?;
+
+        // Read the file size
         let mut size_bytes = [0u8; 8];
-        stream.read_exact(&mut size_bytes).await?;
-        let file_size = u64::from_be_bytes(size_bytes);
+        stream
+            .read_exact(&mut size_bytes)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let file_size = usize::try_from(u64::from_le_bytes(size_bytes))
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        tracing::debug!("File size: {}", file_size);
 
-        // Now read the file contents
-        let mut file_data = Vec::with_capacity(
-            usize::try_from(file_size)
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?,
-        );
-        let mut bytes_received = 0;
+        // Create the full save path by joining with current directory
+        let current_dir =
+            std::env::current_dir().map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let save_path = current_dir.join(&relative_path);
+        tracing::debug!("Creating file at save path: {:?}", save_path);
 
-        #[allow(clippy::cast_possible_truncation)]
-        while bytes_received < file_size {
-            let bytes_to_read =
-                std::cmp::min(self.chunk_size, (file_size - bytes_received) as usize);
-            let mut chunk = vec![0; bytes_to_read];
-            stream.read_exact(&mut chunk).await?;
-            file_data.extend_from_slice(&chunk);
-            bytes_received += bytes_to_read as u64;
-            self.progress += bytes_to_read as u64;
-            tracing::debug!("Received {} bytes, total: {}", bytes_to_read, self.progress);
+        // Create parent directories if they don't exist
+        if let Some(parent) = save_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
         }
 
-        if !file_data.is_empty() {
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis();
-            let unique_filename = format!("{timestamp}_{file_name}");
-            tokio::fs::write(&unique_filename, file_data).await?;
-            tracing::info!("Successfully saved file as {unique_filename}");
+        // Create the file and write the contents
+        tracing::debug!("Creating file");
+
+        let mut file = File::create(&save_path)
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        let mut buffer = vec![0u8; self.chunk_size];
+        let mut total_read = 0;
+
+        while total_read < file_size {
+            let bytes_to_read = std::cmp::min(self.chunk_size, file_size - total_read);
+            let bytes_read = stream
+                .read(&mut buffer[..bytes_to_read])
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+            if bytes_read == 0 {
+                break;
+            }
+
+            file.write_all(&buffer[..bytes_read])
+                .await
+                .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+            total_read += bytes_read;
+            self.progress.store(total_read, Ordering::SeqCst);
         }
 
-        Ok(file_name)
+        file.flush()
+            .await
+            .map_err(|e| Box::new(e) as Box<dyn Error + Send>)?;
+        Ok(relative_path)
     }
 }
