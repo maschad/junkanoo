@@ -4,6 +4,9 @@
 
 A decentralized ephemeral file sharing TUI browser 📁 🔄 🔒
 
+![junkanoo demo](./assets/junkanoo_demo.gif)
+
+
 ## Overview
 
 I had started building around the Christmas holidays, when [Junakoo](https://en.wikipedia.org/wiki/Junkanoo) is observed. In a sense it's a practice that helps us to share our secrets as a culture in a non-obvious way.
@@ -40,12 +43,17 @@ git clone https://github.com/yourusername/junkanoo.git
 cd junkanoo
 ```
 
-2. Build the project:
+2. Ensure you have Rust 1.87.0 installed (rustup will automatically handle this):
+```bash
+rustup show
+```
+
+3. Build the project:
 ```bash
 cargo build --release
 ```
 
-3. Install the binary (optional):
+4. Install the binary (optional):
 ```bash
 cargo install --path .
 ```

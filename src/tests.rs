@@ -1,12 +1,65 @@
 #[cfg(test)]
 #[allow(clippy::module_inception)]
 mod tests {
-    use crate::app::{App, AppState, ConnectionState};
+    use crate::app::{App, AppState, ConnectionState, DirectoryItem};
+    use crate::service::utils::{FileReceiver, FileTransfer};
+    use futures::io::{AsyncRead, AsyncWrite};
     use libp2p::PeerId;
     use std::fs::{self, File};
     use std::io::Write;
     use std::path::PathBuf;
     use tempfile::TempDir;
+    use tokio::io::{AsyncRead as TokioAsyncRead, AsyncWrite as TokioAsyncWrite};
+
+    // Wrapper to adapt tokio::io::DuplexStream to the required interface
+    struct StreamWrapper(tokio::io::DuplexStream);
+    impl AsyncRead for StreamWrapper {
+        fn poll_read(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut [u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            let mut read_buf = tokio::io::ReadBuf::new(buf);
+            match std::pin::Pin::new(&mut self.get_mut().0).poll_read(cx, &mut read_buf) {
+                std::task::Poll::Ready(Ok(())) => {
+                    std::task::Poll::Ready(Ok(read_buf.filled().len()))
+                }
+                std::task::Poll::Ready(Err(e)) => std::task::Poll::Ready(Err(e)),
+                std::task::Poll::Pending => std::task::Poll::Pending,
+            }
+        }
+    }
+    impl AsyncWrite for StreamWrapper {
+        fn poll_write(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> std::task::Poll<std::io::Result<usize>> {
+            <tokio::io::DuplexStream as TokioAsyncWrite>::poll_write(
+                std::pin::Pin::new(&mut self.get_mut().0),
+                cx,
+                buf,
+            )
+        }
+        fn poll_flush(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            <tokio::io::DuplexStream as TokioAsyncWrite>::poll_flush(
+                std::pin::Pin::new(&mut self.get_mut().0),
+                cx,
+            )
+        }
+        fn poll_close(
+            self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<std::io::Result<()>> {
+            <tokio::io::DuplexStream as TokioAsyncWrite>::poll_shutdown(
+                std::pin::Pin::new(&mut self.get_mut().0),
+                cx,
+            )
+        }
+    }
 
     // Helper function to create a temporary directory structure for testing
     fn setup_test_directory() -> TempDir {
@@ -220,7 +273,7 @@ mod tests {
     #[test]
     fn test_directory_item_creation() {
         let path = PathBuf::from("test/path");
-        let item = crate::app::DirectoryItem {
+        let item = DirectoryItem {
             name: "test".to_string(),
             path: path.clone(),
             is_dir: true,
@@ -228,6 +281,7 @@ mod tests {
             depth: 0,
             selected: false,
             preview: String::new(),
+            display_path: PathBuf::new(),
         };
 
         assert_eq!(item.name, "test");
@@ -236,5 +290,82 @@ mod tests {
         assert_eq!(item.index, 0);
         assert_eq!(item.depth, 0);
         assert!(!item.selected);
+    }
+
+    #[test]
+    fn test_file_transfer_path_handling() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test_file.txt");
+        File::create(&file_path)
+            .unwrap()
+            .write_all(b"test content")
+            .unwrap();
+
+        // Test that FileTransfer converts to relative path
+        let transfer = FileTransfer::new(&file_path);
+        assert!(transfer.path().ends_with("test_file.txt"));
+        assert!(!transfer.path().to_string_lossy().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_file_transfer_protocol() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test_file.txt");
+        File::create(&file_path)
+            .unwrap()
+            .write_all(b"test content")
+            .unwrap();
+
+        // Create a mock stream
+        let (sender, receiver) = tokio::io::duplex(1024);
+        let mut sender = StreamWrapper(sender);
+        let mut receiver = StreamWrapper(receiver);
+
+        // Spawn a task to handle the file transfer
+        let transfer = FileTransfer::new(&file_path);
+        let transfer_handle = tokio::spawn(async move { transfer.stream_file(&mut sender).await });
+
+        // Receive the file
+        let file_receiver = FileReceiver::new();
+        let result = file_receiver.receive_file(&mut receiver).await;
+
+        // Wait for transfer to complete
+        transfer_handle.await.unwrap().unwrap();
+
+        // Verify the received file
+        assert!(result.is_ok());
+        let received_path = result.unwrap();
+        let received_content = fs::read_to_string(temp_dir.path().join(received_path)).unwrap();
+        assert_eq!(received_content, "test content");
+    }
+
+    #[tokio::test]
+    async fn test_file_transfer_with_absolute_path() {
+        let temp_dir = setup_test_directory();
+        let file_path = temp_dir.path().join("test_file.txt");
+        let mut file = File::create(&file_path).unwrap();
+        file.write_all(b"test content").unwrap();
+
+        let transfer = FileTransfer::new(&file_path);
+        assert!(transfer.path().ends_with("test_file.txt"));
+        assert!(!transfer.path().to_string_lossy().is_empty());
+
+        let (sender, receiver) = tokio::io::duplex(1024);
+        let mut sender_wrapper = StreamWrapper(sender);
+        let mut receiver_wrapper = StreamWrapper(receiver);
+
+        let transfer_task = tokio::spawn(async move {
+            transfer.stream_file(&mut sender_wrapper).await.unwrap();
+        });
+
+        let file_receiver = FileReceiver::new();
+        let received_path = file_receiver
+            .receive_file(&mut receiver_wrapper)
+            .await
+            .unwrap();
+        assert!(received_path.ends_with("test_file.txt"));
+        assert!(!received_path.is_empty());
+
+        transfer_task.await.unwrap();
     }
 }

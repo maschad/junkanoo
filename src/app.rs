@@ -34,7 +34,8 @@ pub struct App {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DirectoryItem {
     pub name: String,
-    pub path: PathBuf,
+    pub path: PathBuf,         // This will be the absolute path for file operations
+    pub display_path: PathBuf, // This will be used for UI display
     pub is_dir: bool,
     pub index: usize,
     pub depth: usize,
@@ -100,12 +101,33 @@ impl App {
             } else {
                 self.current_path.clone()
             };
-            let mut children: Vec<DirectoryItem> = self
-                .all_shared_items
-                .iter()
-                .filter(|item| item.path.parent().unwrap_or(&PathBuf::new()) == current)
-                .cloned()
-                .collect();
+            tracing::info!("Current path in download mode: {:?}", current);
+            tracing::info!("All shared items: {:?}", self.all_shared_items);
+
+            // In download mode, we want to show all items at the root level
+            let mut children: Vec<DirectoryItem> = if current.as_os_str().is_empty() {
+                // At root level, show all items
+                self.all_shared_items.clone()
+            } else {
+                // For subdirectories, filter by parent
+                self.all_shared_items
+                    .iter()
+                    .filter(|item| {
+                        let binding = &PathBuf::new();
+                        let parent = item.path.parent().unwrap_or(binding);
+                        tracing::info!(
+                            "Comparing paths - parent: {:?}, current: {:?}",
+                            parent,
+                            current
+                        );
+                        parent == current
+                    })
+                    .cloned()
+                    .collect()
+            };
+
+            tracing::info!("Found {} items in current directory", children.len());
+
             children.sort_by(|a, b| match (a.is_dir, b.is_dir) {
                 (true, false) => std::cmp::Ordering::Less,
                 (false, true) => std::cmp::Ordering::Greater,
@@ -153,13 +175,13 @@ impl App {
                 let abs_selected = self.current_path.join(selected_path);
                 path == abs_selected
             }),
-            AppState::Download => self.directory_items.iter().any(|item| {
-                item.path
-                    .strip_prefix(&self.current_path)
-                    .is_ok_and(|rel_path| {
-                        let abs_selected = self.current_path.join(rel_path);
-                        path == abs_selected
-                    })
+            AppState::Download => self.items_to_download.iter().any(|selected_path| {
+                tracing::info!(
+                    "Comparing download paths - selected: {:?}, current: {:?}",
+                    selected_path,
+                    path
+                );
+                selected_path == &path
             }),
         };
 
@@ -167,6 +189,16 @@ impl App {
             .strip_prefix(&self.current_path)
             .map(|rel_path| rel_path.components().count())
             .unwrap_or(0);
+
+        let display_path = if self.state == AppState::Download {
+            // In download mode, use just the name for display
+            PathBuf::from(&name)
+        } else {
+            // In share mode, use the relative path for display
+            path.strip_prefix(&self.current_path)
+                .unwrap_or(&path)
+                .to_path_buf()
+        };
 
         let preview = if is_dir {
             format!("Directory: {name}")
@@ -176,18 +208,15 @@ impl App {
                 |file| {
                     let reader = BufReader::new(file);
                     let mut buffer = String::new();
-                    // Read up to 1000 UTF-8 characters (not bytes)
-                    reader
-                        .take(4000) // Read up to 4000 bytes, adjust as needed for long UTF-8 chars
-                        .read_to_string(&mut buffer)
-                        .ok();
+                    reader.take(4000).read_to_string(&mut buffer).ok();
                     buffer.chars().take(1000).collect()
                 },
             )
         };
         DirectoryItem {
             name,
-            path,
+            path,         // Keep the absolute path
+            display_path, // Use the display path for UI
             is_dir,
             index,
             depth,
@@ -340,6 +369,7 @@ impl App {
     pub fn select_item(&mut self) {
         if let Some(index) = self.selected_index {
             if let Some(item) = self.directory_items.get_mut(index) {
+                tracing::info!("Attempting to select item: {:?}", item);
                 match self.state {
                     AppState::Share | AppState::Download => {
                         let items_set = match self.state {
@@ -351,6 +381,7 @@ impl App {
                             // Add the directory itself with its relative path
                             if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
                                 let path_buf = rel_path.to_path_buf();
+                                tracing::info!("Adding directory to selection: {:?}", path_buf);
                                 items_set.insert(path_buf);
 
                                 // Add all files and subdirectories with their relative paths
@@ -361,6 +392,10 @@ impl App {
                                     if let Ok(entry_rel_path) =
                                         entry.path().strip_prefix(&self.current_path)
                                     {
+                                        tracing::info!(
+                                            "Adding sub-item to selection: {:?}",
+                                            entry_rel_path
+                                        );
                                         items_set.insert(entry_rel_path.to_path_buf());
                                     }
                                 }
@@ -371,19 +406,42 @@ impl App {
                                     // For share mode, store relative to current directory
                                     if let Ok(rel_path) = item.path.strip_prefix(&self.current_path)
                                     {
+                                        tracing::info!(
+                                            "Adding file to share selection: {:?}",
+                                            rel_path
+                                        );
                                         items_set.insert(rel_path.to_path_buf());
                                     } else {
+                                        tracing::info!(
+                                            "Adding file to share selection with name: {:?}",
+                                            item.name
+                                        );
                                         items_set.insert(PathBuf::from(&item.name));
                                     }
                                 }
                                 AppState::Download => {
-                                    // For download mode, use the path directly since it's already relative
-                                    tracing::info!("inserting item is: {:?}", item);
+                                    // For download mode, store the absolute path from the sharing node
+                                    tracing::info!("Download mode - item to insert: {:?}", item);
+                                    tracing::info!("Current path: {:?}", self.current_path);
+
+                                    // Ensure we have a valid path
+                                    if item.path.as_os_str().is_empty() {
+                                        tracing::warn!("Empty path for item: {:?}", item);
+                                        return;
+                                    }
+
+                                    // Use the absolute path for downloads
+                                    tracing::info!(
+                                        "Adding file to download selection with absolute path: {:?}",
+                                        item.path
+                                    );
                                     items_set.insert(item.path.clone());
                                 }
                             }
                         }
                         item.selected = true;
+                        tracing::info!("Item selected. Current selection: {:?}", items_set);
+
                         // Update the cached version
                         if let Some(cached_items) = self.directory_cache.get_mut(&self.current_path)
                         {
@@ -412,14 +470,9 @@ impl App {
                         }
                     }
                     AppState::Download => {
-                        if let Ok(rel_path) = item.path.strip_prefix(&self.current_path) {
-                            let path_buf = rel_path.to_path_buf();
-                            self.items_to_download.remove(&path_buf);
-                        } else {
-                            // If we can't strip the prefix, try removing by filename
-                            let path_buf = PathBuf::from(&item.name);
-                            self.items_to_download.remove(&path_buf);
-                        }
+                        // In download mode, we use the absolute path
+                        tracing::info!("Unselecting item in download mode: {:?}", item);
+                        self.items_to_download.remove(&item.path);
                     }
                 }
                 item.selected = false;
@@ -497,10 +550,23 @@ impl App {
         self.items_being_downloaded
             .clone_from(&self.items_to_download);
 
+        // Get the absolute paths from all_shared_items
         let file_names: Vec<String> = self
             .items_to_download
             .iter()
-            .map(|path| path.to_string_lossy().to_string())
+            .filter_map(|path| {
+                // Find the original item in all_shared_items to get the absolute path
+                self.all_shared_items
+                    .iter()
+                    .find(|item| {
+                        item.name == path.file_name().unwrap_or_default().to_string_lossy()
+                    })
+                    .map(|item| {
+                        let path_str = item.path.to_string_lossy().to_string();
+                        tracing::info!("Using absolute path for download: {}", path_str);
+                        path_str
+                    })
+            })
             .collect();
 
         tracing::info!("Starting download of files: {:?}", file_names);
