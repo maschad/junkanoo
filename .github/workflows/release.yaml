@@ -21,14 +21,20 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            artifact_name: junkanoo-ubuntu
+            artifact_name: junkanoo-linux-x86_64
             target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            artifact_name: junkanoo-linux-aarch64
+            target: aarch64-unknown-linux-gnu
           - os: windows-latest
             artifact_name: junkanoo-windows
             target: x86_64-pc-windows-msvc
           - os: macos-latest
-            artifact_name: junkanoo-macos
+            artifact_name: junkanoo-macos-x86_64
             target: x86_64-apple-darwin
+          - os: macos-latest
+            artifact_name: junkanoo-macos-aarch64
+            target: aarch64-apple-darwin
 
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +51,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Publish to crates.io
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
 
       - name: Upload artifacts
@@ -67,14 +73,34 @@ jobs:
         with:
           path: artifacts
 
+      - name: Package macOS artifacts
+        run: |
+          cd artifacts/junkanoo-macos-x86_64
+          tar -czf junkanoo-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz junkanoo
+          rm junkanoo
+          cd ../junkanoo-macos-aarch64
+          tar -czf junkanoo-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz junkanoo
+          rm junkanoo
+
+      - name: Package Linux artifacts
+        run: |
+          cd artifacts/junkanoo-linux-x86_64
+          tar -czf junkanoo-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz junkanoo
+          rm junkanoo
+          cd ../junkanoo-linux-aarch64
+          tar -czf junkanoo-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz junkanoo
+          rm junkanoo
+
       - name: Create Release
         id: create_release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/junkanoo-ubuntu/*
+            artifacts/junkanoo-linux-x86_64/*
+            artifacts/junkanoo-linux-aarch64/*
             artifacts/junkanoo-windows/*
-            artifacts/junkanoo-macos/*
+            artifacts/junkanoo-macos-x86_64/*
+            artifacts/junkanoo-macos-aarch64/*
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
