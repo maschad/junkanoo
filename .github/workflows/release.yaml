@@ -73,19 +73,23 @@ jobs:
         with:
           path: artifacts
 
-      - name: Rename macOS artifacts
+      - name: Package macOS artifacts
         run: |
           cd artifacts/junkanoo-macos-x86_64
-          mv junkanoo junkanoo-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz
+          tar -czf junkanoo-${{ github.ref_name }}-x86_64-apple-darwin.tar.gz junkanoo
+          rm junkanoo
           cd ../junkanoo-macos-aarch64
-          mv junkanoo junkanoo-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz
+          tar -czf junkanoo-${{ github.ref_name }}-aarch64-apple-darwin.tar.gz junkanoo
+          rm junkanoo
 
-      - name: Rename Linux artifacts
+      - name: Package Linux artifacts
         run: |
           cd artifacts/junkanoo-linux-x86_64
-          mv junkanoo junkanoo-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
+          tar -czf junkanoo-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz junkanoo
+          rm junkanoo
           cd ../junkanoo-linux-aarch64
-          mv junkanoo junkanoo-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz
+          tar -czf junkanoo-${{ github.ref_name }}-aarch64-unknown-linux-gnu.tar.gz junkanoo
+          rm junkanoo
 
       - name: Create Release
         id: create_release
