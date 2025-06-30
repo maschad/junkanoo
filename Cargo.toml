@@ -16,7 +16,7 @@ lto = true
 
 [dependencies]
 anyhow = "1.0.98"
-arboard = "3.5.0"
+arboard = "3.6.0"
 async-std = "1.13.1"
 async-stream = "0.3.6"
 async-walkdir = "2.1.0"
