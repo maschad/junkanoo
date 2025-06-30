@@ -32,7 +32,7 @@ futures = "0.3.31"
 human-panic = { version = "2.0.2", features = ["color"] }
 itertools = "0.14.0"
 lazy_static = "1.5.0"
-libp2p = { version = "0.55.0", features = [
+libp2p = { version = "0.56.0", features = [
     "rsa",
     "tokio",
     "cbor",
@@ -45,7 +45,7 @@ libp2p = { version = "0.55.0", features = [
     "noise",
     "yamux",
 ] }
-libp2p-stream = "0.3.0-alpha"
+libp2p-stream = "0.4.0-alpha"
 mime_guess = "2.0.5"
 once_cell = "1.21.3"
 parking_lot = "0.12.4"
