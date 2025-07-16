@@ -29,7 +29,7 @@ crossterm = "0.29.0"
 dirs-next = "2.0.0"
 fake = "4.3.0"
 futures = "0.3.31"
-human-panic = { version = "2.0.2", features = ["color"] }
+human-panic = { version = "2.0.3", features = ["color"] }
 itertools = "0.14.0"
 lazy_static = "1.5.0"
 libp2p = { version = "0.56.0", features = [
