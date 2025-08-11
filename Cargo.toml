@@ -27,7 +27,7 @@ clap = { version = "4.5.42", features = ["cargo"] }
 crossbeam-channel = "0.5.15"
 crossterm = "0.29.0"
 dirs-next = "2.0.0"
-fake = "4.3.0"
+fake = "4.4.0"
 futures = "0.3.31"
 human-panic = { version = "2.0.3", features = ["color"] }
 itertools = "0.14.0"
