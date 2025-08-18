@@ -15,7 +15,7 @@ lto = true
 
 
 [dependencies]
-anyhow = "1.0.98"
+anyhow = "1.0.99"
 arboard = "3.6.0"
 async-std = "1.13.1"
 async-stream = "0.3.6"
