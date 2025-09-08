@@ -23,7 +23,7 @@ async-walkdir = "2.1.0"
 bip39 = "2.2.0"
 bs58 = "0.5.1"
 chrono = "0.4.42"
-clap = { version = "4.5.45", features = ["cargo"] }
+clap = { version = "4.5.47", features = ["cargo"] }
 crossbeam-channel = "0.5.15"
 crossterm = "0.29.0"
 dirs-next = "2.0.0"
