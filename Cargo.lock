@@ -3378,9 +3378,9 @@ dependencies = [
 
 [[package]]
 name = "rclite"
-version = "0.3.0"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71269a047d7cc78bd762ae472d443f62bfa01763a55505db3286f88b0b2fd953"
+checksum = "02f7ef2601da3b08bb3c34d73b47c4bb9a6b2324bac9e4a8cf150d9fbf055645"
 dependencies = [
  "branches",
 ]
