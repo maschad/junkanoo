@@ -20,7 +20,7 @@ arboard = "3.6.1"
 async-std = "1.13.2"
 async-stream = "0.3.6"
 async-walkdir = "2.1.0"
-bip39 = "2.2.0"
+bip39 = "2.2.2"
 bs58 = "0.5.1"
 chrono = "0.4.42"
 clap = { version = "4.5.53", features = ["cargo"] }
