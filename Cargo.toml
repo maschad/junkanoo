@@ -62,4 +62,4 @@ tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 walkdir = "2.5.0"
 
 [dev-dependencies]
-tempfile = "3.23.0"
+tempfile = "3.24.0"
